@@ -42,14 +42,17 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  // Generate a random room code like 'aur-8k92'
+  // Generate a random room code like Google Meet: 'xxx-yyyy-zzz'
   const generateRoomCode = () => {
-    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
-    let code = 'aur-';
-    for (let i = 0; i < 4; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    const randStr = (len: number) => {
+      let res = '';
+      for (let i = 0; i < len; i++) {
+        res += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return res;
+    };
+    return `${randStr(3)}-${randStr(4)}-${randStr(3)}`;
   };
 
   useEffect(() => {
@@ -267,7 +270,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                 onClick={() => {
                   sounds.playClick();
                   setIsCreatingNew(true);
-                  if (!roomId || !roomId.startsWith('aur-')) setRoomId(generateRoomCode());
+                  if (!roomId || !roomId.includes('-')) setRoomId(generateRoomCode());
                 }}
                 className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
                   isCreatingNew
@@ -319,7 +322,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                     type="text"
                     required
                     readOnly={isCreatingNew}
-                    placeholder="e.g. aur-9x21"
+                    placeholder="e.g. abc-defg-hij"
                     value={roomId}
                     onChange={(e) => setRoomId(e.target.value)}
                     className={`w-full px-4 py-3 bg-dark-900/90 border border-slate-700 rounded-xl font-mono text-indigo-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all ${

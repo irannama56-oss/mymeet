@@ -31,7 +31,8 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
   };
 
   const handleCopyCode = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const meetUrl = `${window.location.origin}/${roomId}`;
+    navigator.clipboard.writeText(meetUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -22,6 +22,21 @@ const AVATAR_COLORS = [
   'from-violet-500 to-fuchsia-600',
 ];
 
+// Helper to extract room slug from pathname (e.g. /abc-defg-hij) or ?room= query like Google Meet
+const getRoomSlugFromUrl = (): string => {
+  if (typeof window === 'undefined') return '';
+  const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
+  if (pathname && !pathname.includes('.') && pathname !== 'index.html') {
+    return pathname;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const roomParam = params.get('room');
+  if (roomParam) {
+    return roomParam.trim().toLowerCase();
+  }
+  return '';
+};
+
 export const App: React.FC = () => {
   // Session & UI States
   const [inMeeting, setInMeeting] = useState(false);
@@ -74,14 +89,16 @@ export const App: React.FC = () => {
   const inMeetingRef = useRef(inMeeting);
   inMeetingRef.current = inMeeting;
 
-  // Check URL query parameters for direct room joining
-  const [initialRoomParam, setInitialRoomParam] = useState('');
+  // Initial room detection from URL pathname (/slug)
+  const [initialRoomParam, setInitialRoomParam] = useState(getRoomSlugFromUrl);
+
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      setInitialRoomParam(roomParam.toLowerCase());
-    }
+    const handlePopState = () => {
+      const slug = getRoomSlugFromUrl();
+      setInitialRoomParam(slug);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   // Handle remote stream update callback from WebRTC Manager
@@ -110,12 +127,11 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Connect WebRTC peer connection deterministically
+  // Connect WebRTC peer connection deterministically (Higher ID initiates)
   const connectPeer = useCallback((peerId: string) => {
     const webrtc = webrtcRef.current;
     if (!webrtc) return;
 
-    // Deterministic role: Peer with higher ID initiates the offer
     const isInitiator = userId > peerId;
     webrtc.createPeerConnection(peerId, isInitiator);
   }, [userId]);
@@ -127,7 +143,7 @@ export const App: React.FC = () => {
     if (!webrtc || !signaling) return;
 
     switch (msg.type) {
-      // 0. Room probe: Someone is asking if the room is locked and who the host is
+      // 0. Room probe: Someone is asking about the room state and existing host
       case 'room-probe':
         if (localParticipantRef.current.isHost) {
           signaling.send({
@@ -136,19 +152,32 @@ export const App: React.FC = () => {
             payload: {
               hostId: userId,
               isLocked: isRoomLockedRef.current,
+              hostJoinedAt: localParticipantRef.current.joinedAt,
               participants: [localParticipantRef.current],
             },
           });
         }
         break;
 
-      // 0.5 Room state: Received in response to probe or broadcast
+      // 0.5 Room state: Received existing host info (Prevents duplicate rooms with same slug!)
       case 'room-state':
         if (msg.payload?.isLocked !== undefined) {
           setIsRoomLocked(msg.payload.isLocked);
         }
+
+        // If an existing host already claims this slug, yield host role to avoid duplicate rooms
+        if (msg.payload?.hostId && msg.payload.hostId !== userId) {
+          console.log(`[Mesh] Existing host discovered: ${msg.payload.hostId}. Joining as participant.`);
+          setIsHost(false);
+          setLocalParticipant((prev) => {
+            const next = { ...prev, isHost: false };
+            localParticipantRef.current = next;
+            return next;
+          });
+        }
+
         // If guest is waiting and room is locked, send knock
-        if (!localParticipantRef.current.isHost && !inMeetingRef.current) {
+        if (!inMeetingRef.current) {
           if (msg.payload?.isLocked) {
             setWaitingStatus('waiting');
             signaling.send({
@@ -157,11 +186,11 @@ export const App: React.FC = () => {
               payload: { avatarColor: localParticipantRef.current.avatarColor },
             });
           } else {
-            // Direct enter
+            // Direct enter into existing room
             setWaitingStatus('none');
             setInMeeting(true);
             sounds.playJoinChime();
-            broadcastMyState(localParticipantRef.current);
+            broadcastMyState({ ...localParticipantRef.current, isHost: false });
           }
         }
         break;
@@ -235,6 +264,25 @@ export const App: React.FC = () => {
       case 'state-update':
         if (msg.payload?.participant) {
           const remoteP: Participant = msg.payload.participant;
+
+          // Prevent duplicate host collision with same slug: Seniority rule
+          if (remoteP.isHost && localParticipantRef.current.isHost && remoteP.id !== userId) {
+            const remoteJoinedAt = remoteP.joinedAt || 0;
+            const localJoinedAt = localParticipantRef.current.joinedAt || 0;
+            const shouldYield =
+              remoteJoinedAt < localJoinedAt ||
+              (remoteJoinedAt === localJoinedAt && remoteP.id < userId);
+
+            if (shouldYield) {
+              console.log(`[Mesh] Yielding host role to senior host ${remoteP.id}`);
+              setIsHost(false);
+              setLocalParticipant((prev) => {
+                const next = { ...prev, isHost: false };
+                localParticipantRef.current = next;
+                return next;
+              });
+            }
+          }
 
           // If remote participant is sharing screen, update spotlight ID
           if (remoteP.isScreenSharing) {
@@ -353,9 +401,15 @@ export const App: React.FC = () => {
     videoEnabled: boolean;
     requireHostApproval: boolean;
   }) => {
-    setRoomId(data.roomId);
+    const cleanRoomId = data.roomId.trim().toLowerCase();
+    setRoomId(cleanRoomId);
     setIsHost(data.isHost);
     setIsRoomLocked(data.requireHostApproval);
+
+    // Update browser URL to Google Meet path format: /abc-defg-hij
+    if (typeof window !== 'undefined' && window.location.pathname !== `/${cleanRoomId}`) {
+      window.history.pushState({}, '', `/${cleanRoomId}`);
+    }
 
     const updatedLocal: Participant = {
       ...localParticipant,
@@ -367,7 +421,7 @@ export const App: React.FC = () => {
     setLocalParticipant(updatedLocal);
 
     // Setup Signaling Channel
-    const signaling = new SignalingService(data.roomId, userId);
+    const signaling = new SignalingService(cleanRoomId, userId);
     signalingRef.current = signaling;
     signaling.connect(handleSignalingMessage);
 
@@ -410,6 +464,13 @@ export const App: React.FC = () => {
       console.warn('Could not acquire media stream:', err);
     }
 
+    // Probe room first: checks if room already exists with an active host
+    signaling.send({
+      type: 'room-probe',
+      senderName: data.name,
+      payload: { avatarColor },
+    });
+
     // If host: enter immediately and broadcast room state
     if (data.isHost) {
       setInMeeting(true);
@@ -426,17 +487,11 @@ export const App: React.FC = () => {
         payload: {
           hostId: userId,
           isLocked: data.requireHostApproval,
+          hostJoinedAt: updatedLocal.joinedAt,
         },
       });
     } else {
-      // If guest: probe room status first
-      signaling.send({
-        type: 'room-probe',
-        senderName: data.name,
-        payload: { avatarColor },
-      });
-
-      // Brief timeout: if no host responded that room is locked, join directly
+      // If guest: brief timeout; if no host responded with lock, enter room directly
       setTimeout(() => {
         if (!inMeetingRef.current && waitingStatus === 'none') {
           setInMeeting(true);
@@ -449,7 +504,7 @@ export const App: React.FC = () => {
             },
           });
         }
-      }, 800);
+      }, 700);
     }
   };
 
@@ -549,7 +604,6 @@ export const App: React.FC = () => {
         targetId: knock.participantId,
       });
     }
-    // Pre-create peer connection to newcomer
     connectPeer(knock.participantId);
   };
 
@@ -595,6 +649,11 @@ export const App: React.FC = () => {
 
   // Leave Meeting
   const handleLeaveMeeting = () => {
+    // Reset URL back to root
+    if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/');
+    }
+
     if (signalingRef.current) {
       signalingRef.current.send({
         type: 'peer-left',

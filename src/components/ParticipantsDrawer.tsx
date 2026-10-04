@@ -41,7 +41,7 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
   if (!isOpen) return null;
 
   const handleCopyLink = () => {
-    const url = `${window.location.origin}/?room=${roomId}`;
+    const url = `${window.location.origin}/${roomId}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
