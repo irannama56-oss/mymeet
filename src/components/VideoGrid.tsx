@@ -25,60 +25,89 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
 }) => {
   const allParticipants = [localParticipant, ...remoteParticipants];
 
-  // Check if screen sharing is active
-  const isScreenSharingActive = Boolean(screenStream || screenSharingParticipantId);
-  const screenSharer = allParticipants.find(p => p.id === screenSharingParticipantId) || localParticipant;
+  // Identify who is screen sharing (local or remote)
+  const screenSharer =
+    allParticipants.find(
+      (p) => p.id === screenSharingParticipantId || p.isScreenSharing
+    ) || (screenStream ? localParticipant : null);
 
-  // Find pinned participant
+  const isScreenSharingActive = Boolean(screenSharer);
+
+  // Identify pinned participant (if any)
   const pinnedParticipant = pinnedId
-    ? allParticipants.find(p => p.id === pinnedId)
+    ? allParticipants.find((p) => p.id === pinnedId)
     : null;
 
-  // Determine spotlight mode (either screen share or pinned user)
+  // Spotlight mode is active if someone is screen sharing OR someone is pinned
   const isSpotlightMode = isScreenSharingActive || Boolean(pinnedParticipant);
 
   if (isSpotlightMode) {
-    const spotlightStream = screenStream 
-      ? screenStream 
-      : pinnedParticipant?.id === localParticipant.id 
-        ? localStream 
-        : pinnedParticipant ? remoteStreams.get(pinnedParticipant.id) : null;
+    const isSharerLocal = screenSharer?.id === localParticipant.id;
 
-    const spotlightParticipant = isScreenSharingActive ? screenSharer : pinnedParticipant!;
-    const remainingParticipants = allParticipants.filter(p => p.id !== spotlightParticipant.id);
+    // Determine the spotlighted stream
+    let spotlightStream: MediaStream | null = null;
+    let spotlightParticipant: Participant;
+
+    if (isScreenSharingActive && screenSharer) {
+      spotlightParticipant = screenSharer;
+      spotlightStream = isSharerLocal
+        ? screenStream || localStream
+        : remoteStreams.get(screenSharer.id) || null;
+    } else {
+      spotlightParticipant = pinnedParticipant!;
+      spotlightStream =
+        spotlightParticipant.id === localParticipant.id
+          ? localStream
+          : remoteStreams.get(spotlightParticipant.id) || null;
+    }
+
+    // Remaining participants for the side/bottom thumbnail strip
+    const remainingParticipants = allParticipants.filter(
+      (p) => p.id !== spotlightParticipant.id
+    );
 
     return (
-      <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-4 overflow-hidden">
-        {/* Main Spotlight Area */}
-        <div className="flex-1 h-[60vh] lg:h-full relative min-h-0">
+      <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-2 sm:p-4 overflow-hidden">
+        {/* Main Spotlight Area (Large Viewport) */}
+        <div className="flex-1 h-[55vh] sm:h-[60vh] lg:h-full relative min-h-0 min-w-0">
           <VideoTile
             participant={spotlightParticipant}
             stream={spotlightStream}
-            isLocal={spotlightParticipant.id === localParticipant.id && !isScreenSharingActive}
+            isLocal={isSharerLocal && !isScreenSharingActive}
             isPinned={true}
             onTogglePin={onTogglePin}
             isScreenShareTile={isScreenSharingActive}
           />
         </div>
 
-        {/* Thumbnail Sidebar Strip */}
+        {/* Thumbnail Strip (Participants Sidebar / Bottom Carousel on Mobile) */}
         <div className="lg:w-72 xl:w-80 h-36 lg:h-full flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto shrink-0 pb-2 lg:pb-0">
-          {/* If screen sharing, also show the sharer's camera */}
+          {/* If screen sharing, show the presenter's camera tile in the strip */}
           {isScreenSharingActive && (
-            <div className="w-52 sm:w-60 lg:w-full h-full lg:h-44 shrink-0">
+            <div className="w-48 sm:w-56 lg:w-full h-full lg:h-44 shrink-0">
               <VideoTile
                 participant={spotlightParticipant}
-                stream={spotlightParticipant.id === localParticipant.id ? localStream : remoteStreams.get(spotlightParticipant.id)}
-                isLocal={spotlightParticipant.id === localParticipant.id}
+                stream={
+                  isSharerLocal
+                    ? localStream
+                    : remoteStreams.get(spotlightParticipant.id)
+                }
+                isLocal={isSharerLocal}
                 onTogglePin={onTogglePin}
+                isScreenShareTile={false}
               />
             </div>
           )}
 
+          {/* Other participants */}
           {remainingParticipants.map((p) => {
-            const stream = p.id === localParticipant.id ? localStream : remoteStreams.get(p.id);
+            const stream =
+              p.id === localParticipant.id ? localStream : remoteStreams.get(p.id);
             return (
-              <div key={p.id} className="w-52 sm:w-60 lg:w-full h-full lg:h-44 shrink-0">
+              <div
+                key={p.id}
+                className="w-48 sm:w-56 lg:w-full h-full lg:h-44 shrink-0"
+              >
                 <VideoTile
                   participant={p}
                   stream={stream}
@@ -94,7 +123,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
     );
   }
 
-  // Normal Equal Grid Layout based on total participant count
+  // Normal Equal Grid Layout based on participant count
   const count = allParticipants.length;
 
   const getGridClasses = () => {
@@ -115,12 +144,15 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   };
 
   return (
-    <div className="w-full h-full flex items-center justify-center p-4">
-      <div className={`grid gap-4 w-full h-full items-center justify-center ${getGridClasses()}`}>
+    <div className="w-full h-full flex items-center justify-center p-2 sm:p-4">
+      <div
+        className={`grid gap-3 sm:gap-4 w-full h-full items-center justify-center ${getGridClasses()}`}
+      >
         {allParticipants.map((p) => {
-          const stream = p.id === localParticipant.id ? localStream : remoteStreams.get(p.id);
+          const stream =
+            p.id === localParticipant.id ? localStream : remoteStreams.get(p.id);
           return (
-            <div key={p.id} className="w-full h-full min-h-[220px]">
+            <div key={p.id} className="w-full h-full min-h-[180px] sm:min-h-[220px]">
               <VideoTile
                 participant={p}
                 stream={stream}

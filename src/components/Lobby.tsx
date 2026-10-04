@@ -53,10 +53,13 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   };
 
   useEffect(() => {
-    if (isCreatingNew && !roomId) {
+    if (initialRoomId) {
+      setRoomId(initialRoomId);
+      setIsCreatingNew(false);
+    } else if (isCreatingNew && !roomId) {
       setRoomId(generateRoomCode());
     }
-  }, [isCreatingNew]);
+  }, [initialRoomId, isCreatingNew]);
 
   // Setup preview stream
   useEffect(() => {

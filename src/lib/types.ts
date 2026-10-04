@@ -49,6 +49,7 @@ export type SignalingMessageType =
   | 'join-request'
   | 'join-approved'
   | 'join-declined'
+  | 'room-probe'
   | 'room-state'
   | 'offer'
   | 'answer'

@@ -27,7 +27,7 @@ export const App: React.FC = () => {
   const [inMeeting, setInMeeting] = useState(false);
   const [waitingStatus, setWaitingStatus] = useState<'none' | 'waiting' | 'declined'>('none');
   const [roomId, setRoomId] = useState('');
-  const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 9));
+  const [userId] = useState(() => 'usr_' + Math.random().toString(36).substring(2, 9));
   const [avatarColor] = useState(() => AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]);
 
   // Meeting State
@@ -69,6 +69,10 @@ export const App: React.FC = () => {
   const signalingRef = useRef<SignalingService | null>(null);
   const localParticipantRef = useRef(localParticipant);
   localParticipantRef.current = localParticipant;
+  const isRoomLockedRef = useRef(isRoomLocked);
+  isRoomLockedRef.current = isRoomLocked;
+  const inMeetingRef = useRef(inMeeting);
+  inMeetingRef.current = inMeeting;
 
   // Check URL query parameters for direct room joining
   const [initialRoomParam, setInitialRoomParam] = useState('');
@@ -93,6 +97,29 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  // Broadcast local state helper
+  const broadcastMyState = useCallback((updatedParticipant: Participant) => {
+    if (signalingRef.current) {
+      signalingRef.current.send({
+        type: 'state-update',
+        payload: {
+          participant: updatedParticipant,
+          isRoomLocked: isRoomLockedRef.current,
+        },
+      });
+    }
+  }, []);
+
+  // Connect WebRTC peer connection deterministically
+  const connectPeer = useCallback((peerId: string) => {
+    const webrtc = webrtcRef.current;
+    if (!webrtc) return;
+
+    // Deterministic role: Peer with higher ID initiates the offer
+    const isInitiator = userId > peerId;
+    webrtc.createPeerConnection(peerId, isInitiator);
+  }, [userId]);
+
   // Handle incoming signaling messages
   const handleSignalingMessage = useCallback(async (msg: SignalingMessage) => {
     const webrtc = webrtcRef.current;
@@ -100,6 +127,45 @@ export const App: React.FC = () => {
     if (!webrtc || !signaling) return;
 
     switch (msg.type) {
+      // 0. Room probe: Someone is asking if the room is locked and who the host is
+      case 'room-probe':
+        if (localParticipantRef.current.isHost) {
+          signaling.send({
+            type: 'room-state',
+            targetId: msg.senderId,
+            payload: {
+              hostId: userId,
+              isLocked: isRoomLockedRef.current,
+              participants: [localParticipantRef.current],
+            },
+          });
+        }
+        break;
+
+      // 0.5 Room state: Received in response to probe or broadcast
+      case 'room-state':
+        if (msg.payload?.isLocked !== undefined) {
+          setIsRoomLocked(msg.payload.isLocked);
+        }
+        // If guest is waiting and room is locked, send knock
+        if (!localParticipantRef.current.isHost && !inMeetingRef.current) {
+          if (msg.payload?.isLocked) {
+            setWaitingStatus('waiting');
+            signaling.send({
+              type: 'join-request',
+              senderName: localParticipantRef.current.name,
+              payload: { avatarColor: localParticipantRef.current.avatarColor },
+            });
+          } else {
+            // Direct enter
+            setWaitingStatus('none');
+            setInMeeting(true);
+            sounds.playJoinChime();
+            broadcastMyState(localParticipantRef.current);
+          }
+        }
+        break;
+
       // 1. Host receives join request / knock
       case 'join-request':
         if (localParticipantRef.current.isHost) {
@@ -111,32 +177,35 @@ export const App: React.FC = () => {
             avatarColor: msg.payload?.avatarColor || AVATAR_COLORS[0],
             requestedAt: Date.now(),
           };
-          setKnockRequests((prev) => [...prev.filter((k) => k.participantId !== msg.senderId), newKnock]);
+          setKnockRequests((prev) => [
+            ...prev.filter((k) => k.participantId !== msg.senderId),
+            newKnock,
+          ]);
         }
         break;
 
       // 2. Guest receives approval from host
       case 'join-approved':
-        if (waitingStatus === 'waiting' && msg.targetId === userId) {
+        if (msg.targetId === userId) {
           setWaitingStatus('none');
           setInMeeting(true);
           sounds.playJoinChime();
-          // Broadcast presence to all existing participants
+          // Broadcast presence to all participants
           signaling.send({
             type: 'state-update',
             payload: {
               participant: localParticipantRef.current,
-              isRoomLocked,
+              isRoomLocked: isRoomLockedRef.current,
             },
           });
-          // Initiate WebRTC connection to host
-          webrtc.createPeerConnection(msg.senderId, true);
+          // Connect to host and all known peers
+          connectPeer(msg.senderId);
         }
         break;
 
       // 3. Guest receives rejection from host
       case 'join-declined':
-        if (waitingStatus === 'waiting' && msg.targetId === userId) {
+        if (msg.targetId === userId) {
           setWaitingStatus('declined');
         }
         break;
@@ -162,25 +231,48 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 7. Remote Participant State Update (Sync names, camera, mic, hand raise)
+      // 7. Remote Participant State Update (Sync names, camera, mic, screen share, hand raise)
       case 'state-update':
         if (msg.payload?.participant) {
           const remoteP: Participant = msg.payload.participant;
+
+          // If remote participant is sharing screen, update spotlight ID
+          if (remoteP.isScreenSharing) {
+            setScreenSharingParticipantId(remoteP.id);
+          } else if (screenSharingParticipantId === remoteP.id) {
+            setScreenSharingParticipantId(null);
+          }
+
           setRemoteParticipants((prev) => {
             const exists = prev.some((p) => p.id === remoteP.id);
             if (exists) {
               return prev.map((p) => (p.id === remoteP.id ? { ...p, ...remoteP } : p));
             } else {
               sounds.playJoinChime();
-              // Create peer connection if not already created
-              webrtc.createPeerConnection(remoteP.id, false);
               return [...prev, remoteP];
             }
           });
 
+          // Connect WebRTC peer connection in mesh
+          if (inMeetingRef.current) {
+            connectPeer(remoteP.id);
+          }
+
           // Sync room locked state if sent from host
           if (remoteP.isHost && msg.payload.isRoomLocked !== undefined) {
             setIsRoomLocked(msg.payload.isRoomLocked);
+          }
+
+          // If this is host and newcomer announced, reply with host state
+          if (localParticipantRef.current.isHost && msg.senderId !== userId) {
+            signaling.send({
+              type: 'state-update',
+              targetId: msg.senderId,
+              payload: {
+                participant: localParticipantRef.current,
+                isRoomLocked: isRoomLockedRef.current,
+              },
+            });
           }
         }
         break;
@@ -189,6 +281,9 @@ export const App: React.FC = () => {
       case 'peer-left':
         sounds.playLeaveChime();
         setRemoteParticipants((prev) => prev.filter((p) => p.id !== msg.senderId));
+        if (screenSharingParticipantId === msg.senderId) {
+          setScreenSharingParticipantId(null);
+        }
         webrtc.closePeer(msg.senderId);
         break;
 
@@ -228,9 +323,9 @@ export const App: React.FC = () => {
       default:
         break;
     }
-  }, [userId, waitingStatus, isChatOpen, isRoomLocked]);
+  }, [userId, screenSharingParticipantId, isChatOpen, connectPeer, broadcastMyState]);
 
-  // Trigger floating emoji animation and confetti for specific items
+  // Trigger floating emoji animation and confetti
   const triggerFloatingEmoji = (emoji: string) => {
     if (emoji === '🎉') {
       confetti({
@@ -241,7 +336,7 @@ export const App: React.FC = () => {
     }
 
     const newId = Math.random().toString(36).substring(2, 9);
-    const left = Math.random() * 80 + 10; // Between 10% and 90%
+    const left = Math.random() * 80 + 10;
     setFloatingEmojis((prev) => [...prev, { id: newId, emoji, left }]);
 
     setTimeout(() => {
@@ -280,13 +375,23 @@ export const App: React.FC = () => {
     const webrtc = new WebRTCManager(signaling, userId, handleRemoteStreamUpdate);
     webrtcRef.current = webrtc;
 
+    // Handle screen share ended from browser native UI bar
+    webrtc.setScreenShareEndedCallback(() => {
+      setScreenStream(null);
+      setScreenSharingParticipantId(null);
+      setLocalParticipant((prev) => {
+        const reverted = { ...prev, isScreenSharing: false };
+        broadcastMyState(reverted);
+        return reverted;
+      });
+    });
+
     // Detect speaking levels
     webrtc.setAudioLevelCallback((level) => {
       const isSpeaking = level > 25 && updatedLocal.isAudioEnabled;
       setLocalParticipant((prev) => {
         if (prev.isSpeaking !== isSpeaking) {
           const next = { ...prev, isSpeaking, audioLevel: level };
-          // Broadcast speaking state if changed
           signaling.send({
             type: 'state-update',
             payload: { participant: next },
@@ -305,7 +410,7 @@ export const App: React.FC = () => {
       console.warn('Could not acquire media stream:', err);
     }
 
-    // If host, enter room immediately and notify
+    // If host: enter immediately and broadcast room state
     if (data.isHost) {
       setInMeeting(true);
       sounds.playJoinChime();
@@ -316,40 +421,35 @@ export const App: React.FC = () => {
           isRoomLocked: data.requireHostApproval,
         },
       });
-    } else {
-      // If guest, send join request (knock) and wait for host if room is locked
-      if (data.requireHostApproval) {
-        setWaitingStatus('waiting');
-        signaling.send({
-          type: 'join-request',
-          senderName: data.name,
-          payload: { avatarColor },
-        });
-      } else {
-        // Direct join
-        setInMeeting(true);
-        sounds.playJoinChime();
-        signaling.send({
-          type: 'state-update',
-          payload: {
-            participant: updatedLocal,
-            isRoomLocked: false,
-          },
-        });
-      }
-    }
-  };
-
-  // Broadcast state changes whenever audio, video, hand raise toggles
-  const broadcastMyState = (updatedParticipant: Participant) => {
-    if (signalingRef.current) {
-      signalingRef.current.send({
-        type: 'state-update',
+      signaling.send({
+        type: 'room-state',
         payload: {
-          participant: updatedParticipant,
-          isRoomLocked,
+          hostId: userId,
+          isLocked: data.requireHostApproval,
         },
       });
+    } else {
+      // If guest: probe room status first
+      signaling.send({
+        type: 'room-probe',
+        senderName: data.name,
+        payload: { avatarColor },
+      });
+
+      // Brief timeout: if no host responded that room is locked, join directly
+      setTimeout(() => {
+        if (!inMeetingRef.current && waitingStatus === 'none') {
+          setInMeeting(true);
+          sounds.playJoinChime();
+          signaling.send({
+            type: 'state-update',
+            payload: {
+              participant: updatedLocal,
+              isRoomLocked: false,
+            },
+          });
+        }
+      }, 800);
     }
   };
 
@@ -394,16 +494,8 @@ export const App: React.FC = () => {
         setLocalParticipant(updated);
         setScreenSharingParticipantId(userId);
         broadcastMyState(updated);
-
-        stream.getVideoTracks()[0].onended = () => {
-          setScreenStream(null);
-          const reverted = { ...localParticipant, isScreenSharing: false };
-          setLocalParticipant(reverted);
-          setScreenSharingParticipantId(null);
-          broadcastMyState(reverted);
-        };
       } catch (e) {
-        console.error('Screen sharing error:', e);
+        console.error('Screen sharing start error:', e);
       }
     }
   };
@@ -457,6 +549,8 @@ export const App: React.FC = () => {
         targetId: knock.participantId,
       });
     }
+    // Pre-create peer connection to newcomer
+    connectPeer(knock.participantId);
   };
 
   // Host Declines Knocking Guest
@@ -523,6 +617,7 @@ export const App: React.FC = () => {
     setInMeeting(false);
     setWaitingStatus('none');
     setPinnedParticipantId(null);
+    setScreenSharingParticipantId(null);
   };
 
   // Change Device Input
@@ -557,7 +652,7 @@ export const App: React.FC = () => {
   // Active Meeting View
   return (
     <div className="relative w-screen h-screen bg-dark-950 text-slate-100 overflow-hidden select-none flex flex-col justify-between">
-      {/* Background radial glows */}
+      {/* Background ambient radial glows */}
       <div className="absolute top-1/3 left-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[140px] pointer-events-none -z-10" />
       <div className="absolute bottom-1/3 right-1/4 w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[140px] pointer-events-none -z-10" />
 
@@ -665,4 +760,5 @@ export const App: React.FC = () => {
     </div>
   );
 };
+
 export default App;
