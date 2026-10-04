@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
-import { SignalingMessage } from './types';
+import { SignalingMessage, cleanRoomCode } from './types';
 
 // Helper to get Supabase credentials from env or localStorage
 export function getSupabaseCredentials(): { url: string; key: string } {
@@ -62,7 +62,7 @@ export class SignalingService {
   private seenMessageIds: Set<string> = new Set();
 
   constructor(roomId: string, userId: string) {
-    this.roomId = roomId;
+    this.roomId = cleanRoomCode(roomId);
     this.userId = userId;
   }
 

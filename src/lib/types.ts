@@ -70,3 +70,24 @@ export interface SignalingMessage {
   targetId?: string; // If targeting a specific peer
   payload?: any;
 }
+
+export function cleanRoomCode(input: string): string {
+  if (!input) return '';
+  let str = input.trim().toLowerCase();
+  if (str.includes('://')) {
+    try {
+      const url = new URL(str);
+      str = url.pathname;
+    } catch {
+      str = str.split('://')[1] || str;
+    }
+  }
+  str = str.split('?')[0].split('#')[0];
+  if (str.includes('/')) {
+    const segments = str.split('/').filter(Boolean);
+    str = segments[segments.length - 1] || '';
+  }
+  str = str.replace(/[^a-z0-9-]/g, '');
+  return str;
+}
+

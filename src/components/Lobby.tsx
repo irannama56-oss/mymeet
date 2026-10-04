@@ -4,6 +4,7 @@ import {
   Sparkles, ArrowRight, Shield, Users, Radio, Settings, Copy, Check
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
+import { cleanRoomCode } from '../lib/types';
 
 interface LobbyProps {
   onJoin: (data: {
@@ -285,6 +286,9 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                 onClick={() => {
                   sounds.playClick();
                   setIsCreatingNew(false);
+                  if (!initialRoomId) {
+                    setRoomId('');
+                  }
                 }}
                 className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
                   !isCreatingNew
@@ -315,16 +319,16 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
               {/* Room Code */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                  {isCreatingNew ? 'Meeting Code (Auto-generated)' : 'Enter Meeting Code'}
+                  {isCreatingNew ? 'Meeting Code (Auto-generated)' : 'Enter Meeting Code or Link'}
                 </label>
                 <div className="relative flex items-center">
                   <input
                     type="text"
                     required
                     readOnly={isCreatingNew}
-                    placeholder="e.g. abc-defg-hij"
+                    placeholder={isCreatingNew ? 'e.g. abc-defg-hij' : 'Enter code or paste link...'}
                     value={roomId}
-                    onChange={(e) => setRoomId(e.target.value)}
+                    onChange={(e) => setRoomId(cleanRoomCode(e.target.value))}
                     className={`w-full px-4 py-3 bg-dark-900/90 border border-slate-700 rounded-xl font-mono text-indigo-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all ${
                       isCreatingNew ? 'cursor-pointer' : ''
                     }`}

@@ -1,5 +1,58 @@
 import { SignalingService } from './supabase';
 
+function createSyntheticStream(userName: string = 'User'): MediaStream {
+  if (typeof document === 'undefined') return new MediaStream();
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 480;
+  const ctx = canvas.getContext('2d');
+  
+  let frame = 0;
+  function draw() {
+    if (!ctx) return;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.beginPath();
+    ctx.arc(320, 240, 75 + Math.sin(frame * 0.08) * 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#6366f1';
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 54px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(userName.charAt(0).toUpperCase() || 'U', 320, 240);
+
+    frame++;
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+  const stream = canvas.captureStream(20);
+
+  // Add silent audio track so negotiation has audio
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (AudioCtx) {
+      const actx = new AudioCtx();
+      const osc = actx.createOscillator();
+      const gain = actx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      const dest = actx.createMediaStreamDestination();
+      gain.connect(dest);
+      osc.start();
+      const audioTrack = dest.stream.getAudioTracks()[0];
+      if (audioTrack) {
+        stream.addTrack(audioTrack);
+      }
+    }
+  } catch (e) {}
+
+  return stream;
+}
+
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -107,11 +160,10 @@ export class WebRTCManager {
         this.setupAudioAnalysis(fallbackStream);
         return fallbackStream;
       } catch (audioErr) {
-        console.warn('Microphone access also failed:', audioErr);
-        // Create an empty dummy stream to allow peer connections without hardware
-        const emptyStream = new MediaStream();
-        this.localStream = emptyStream;
-        return emptyStream;
+        console.warn('Hardware media access failed, falling back to synthetic stream:', audioErr);
+        const synthetic = createSyntheticStream('User');
+        this.localStream = synthetic;
+        return synthetic;
       }
     }
   }
@@ -292,11 +344,15 @@ export class WebRTCManager {
 
     // 3. ICE Candidate Handler
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (event.candidate && event.candidate.candidate) {
         this.signaling.send({
           type: 'ice-candidate',
           targetId: targetPeerId,
-          payload: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+          payload: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+          },
         });
       }
     };
@@ -352,7 +408,10 @@ export class WebRTCManager {
       this.signaling.send({
         type: 'offer',
         targetId: targetPeerId,
-        payload: offer,
+        payload: {
+          type: offer.type,
+          sdp: offer.sdp,
+        },
       });
     } catch (err) {
       console.error(`Error creating offer for ${targetPeerId}:`, err);
@@ -365,7 +424,6 @@ export class WebRTCManager {
 
       // Handle glare: if we made an offer and received an offer
       if (pc.signalingState !== 'stable') {
-        // Rollback if possible
         try {
           await pc.setLocalDescription({ type: 'rollback' });
         } catch (e) {
@@ -382,7 +440,10 @@ export class WebRTCManager {
       this.signaling.send({
         type: 'answer',
         targetId: senderId,
-        payload: answer,
+        payload: {
+          type: answer.type,
+          sdp: answer.sdp,
+        },
       });
     } catch (err) {
       console.error(`Error handling offer from ${senderId}:`, err);

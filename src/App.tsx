@@ -10,7 +10,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { MeetingHeader } from './components/MeetingHeader';
 import { WebRTCManager } from './lib/webrtc';
 import { SignalingService } from './lib/supabase';
-import { Participant, ChatMessage, KnockRequest, SignalingMessage } from './lib/types';
+import { Participant, ChatMessage, KnockRequest, SignalingMessage, cleanRoomCode } from './lib/types';
 import { sounds } from './lib/sound';
 
 const AVATAR_COLORS = [
@@ -22,17 +22,17 @@ const AVATAR_COLORS = [
   'from-violet-500 to-fuchsia-600',
 ];
 
-// Helper to extract room slug from pathname (e.g. /abc-defg-hij) or ?room= query like Google Meet
+// Helper to extract room slug from pathname (/abc-defg-hij) or ?room= query
 const getRoomSlugFromUrl = (): string => {
   if (typeof window === 'undefined') return '';
   const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
   if (pathname && !pathname.includes('.') && pathname !== 'index.html') {
-    return pathname;
+    return cleanRoomCode(pathname);
   }
   const params = new URLSearchParams(window.location.search);
   const roomParam = params.get('room');
   if (roomParam) {
-    return roomParam.trim().toLowerCase();
+    return cleanRoomCode(roomParam);
   }
   return '';
 };
@@ -79,7 +79,7 @@ export const App: React.FC = () => {
   const [knockRequests, setKnockRequests] = useState<KnockRequest[]>([]);
   const [floatingEmojis, setFloatingEmojis] = useState<{ id: string; emoji: string; left: number }[]>([]);
 
-  // Refs
+  // Refs for access in callbacks
   const webrtcRef = useRef<WebRTCManager | null>(null);
   const signalingRef = useRef<SignalingService | null>(null);
   const localParticipantRef = useRef(localParticipant);
@@ -127,12 +127,13 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Connect WebRTC peer connection deterministically (Higher ID initiates)
+  // Connect WebRTC peer connection deterministically: Larger userId initiates the offer
   const connectPeer = useCallback((peerId: string) => {
     const webrtc = webrtcRef.current;
     if (!webrtc) return;
 
     const isInitiator = userId > peerId;
+    console.log(`[Mesh] Connecting to peer ${peerId}, isInitiator: ${isInitiator} (myId: ${userId})`);
     webrtc.createPeerConnection(peerId, isInitiator);
   }, [userId]);
 
@@ -143,58 +144,6 @@ export const App: React.FC = () => {
     if (!webrtc || !signaling) return;
 
     switch (msg.type) {
-      // 0. Room probe: Someone is asking about the room state and existing host
-      case 'room-probe':
-        if (localParticipantRef.current.isHost) {
-          signaling.send({
-            type: 'room-state',
-            targetId: msg.senderId,
-            payload: {
-              hostId: userId,
-              isLocked: isRoomLockedRef.current,
-              hostJoinedAt: localParticipantRef.current.joinedAt,
-              participants: [localParticipantRef.current],
-            },
-          });
-        }
-        break;
-
-      // 0.5 Room state: Received existing host info (Prevents duplicate rooms with same slug!)
-      case 'room-state':
-        if (msg.payload?.isLocked !== undefined) {
-          setIsRoomLocked(msg.payload.isLocked);
-        }
-
-        // If an existing host already claims this slug, yield host role to avoid duplicate rooms
-        if (msg.payload?.hostId && msg.payload.hostId !== userId) {
-          console.log(`[Mesh] Existing host discovered: ${msg.payload.hostId}. Joining as participant.`);
-          setIsHost(false);
-          setLocalParticipant((prev) => {
-            const next = { ...prev, isHost: false };
-            localParticipantRef.current = next;
-            return next;
-          });
-        }
-
-        // If guest is waiting and room is locked, send knock
-        if (!inMeetingRef.current) {
-          if (msg.payload?.isLocked) {
-            setWaitingStatus('waiting');
-            signaling.send({
-              type: 'join-request',
-              senderName: localParticipantRef.current.name,
-              payload: { avatarColor: localParticipantRef.current.avatarColor },
-            });
-          } else {
-            // Direct enter into existing room
-            setWaitingStatus('none');
-            setInMeeting(true);
-            sounds.playJoinChime();
-            broadcastMyState({ ...localParticipantRef.current, isHost: false });
-          }
-        }
-        break;
-
       // 1. Host receives join request / knock
       case 'join-request':
         if (localParticipantRef.current.isHost) {
@@ -218,6 +167,7 @@ export const App: React.FC = () => {
         if (msg.targetId === userId) {
           setWaitingStatus('none');
           setInMeeting(true);
+          inMeetingRef.current = true;
           sounds.playJoinChime();
           // Broadcast presence to all participants
           signaling.send({
@@ -227,7 +177,6 @@ export const App: React.FC = () => {
               isRoomLocked: isRoomLockedRef.current,
             },
           });
-          // Connect to host and all known peers
           connectPeer(msg.senderId);
         }
         break;
@@ -241,14 +190,14 @@ export const App: React.FC = () => {
 
       // 4. WebRTC Offer received
       case 'offer':
-        if (msg.payload) {
+        if (msg.payload && msg.payload.sdp) {
           await webrtc.handleOffer(msg.senderId, msg.payload);
         }
         break;
 
       // 5. WebRTC Answer received
       case 'answer':
-        if (msg.payload) {
+        if (msg.payload && msg.payload.sdp) {
           await webrtc.handleAnswer(msg.senderId, msg.payload);
         }
         break;
@@ -260,7 +209,7 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 7. Remote Participant State Update (Sync names, camera, mic, screen share, hand raise)
+      // 7. Remote Participant State Update (Sync names, camera, mic, screen share, presence)
       case 'state-update':
         if (msg.payload?.participant) {
           const remoteP: Participant = msg.payload.participant;
@@ -274,7 +223,7 @@ export const App: React.FC = () => {
               (remoteJoinedAt === localJoinedAt && remoteP.id < userId);
 
             if (shouldYield) {
-              console.log(`[Mesh] Yielding host role to senior host ${remoteP.id}`);
+              console.log(`[Mesh] Existing host discovered (${remoteP.id}). Yielding host role.`);
               setIsHost(false);
               setLocalParticipant((prev) => {
                 const next = { ...prev, isHost: false };
@@ -291,6 +240,7 @@ export const App: React.FC = () => {
             setScreenSharingParticipantId(null);
           }
 
+          // Add or update participant in list
           setRemoteParticipants((prev) => {
             const exists = prev.some((p) => p.id === remoteP.id);
             if (exists) {
@@ -301,18 +251,16 @@ export const App: React.FC = () => {
             }
           });
 
-          // Connect WebRTC peer connection in mesh
-          if (inMeetingRef.current) {
-            connectPeer(remoteP.id);
-          }
+          // Connect WebRTC peer connection immediately
+          connectPeer(remoteP.id);
 
           // Sync room locked state if sent from host
           if (remoteP.isHost && msg.payload.isRoomLocked !== undefined) {
             setIsRoomLocked(msg.payload.isRoomLocked);
           }
 
-          // If this is host and newcomer announced, reply with host state
-          if (localParticipantRef.current.isHost && msg.senderId !== userId) {
+          // If newcomer announced (un-targeted broadcast), reply with our presence immediately!
+          if (!msg.targetId && msg.senderId !== userId) {
             signaling.send({
               type: 'state-update',
               targetId: msg.senderId,
@@ -373,6 +321,23 @@ export const App: React.FC = () => {
     }
   }, [userId, screenSharingParticipantId, isChatOpen, connectPeer, broadcastMyState]);
 
+  // Periodic presence heartbeat while in meeting to keep all tabs in sync
+  useEffect(() => {
+    if (!inMeeting) return;
+    const interval = setInterval(() => {
+      if (signalingRef.current && localParticipantRef.current) {
+        signalingRef.current.send({
+          type: 'state-update',
+          payload: {
+            participant: localParticipantRef.current,
+            isRoomLocked: isRoomLockedRef.current,
+          },
+        });
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [inMeeting]);
+
   // Trigger floating emoji animation and confetti
   const triggerFloatingEmoji = (emoji: string) => {
     if (emoji === '🎉') {
@@ -401,14 +366,16 @@ export const App: React.FC = () => {
     videoEnabled: boolean;
     requireHostApproval: boolean;
   }) => {
-    const cleanRoomId = data.roomId.trim().toLowerCase();
-    setRoomId(cleanRoomId);
+    const cleanId = cleanRoomCode(data.roomId);
+    if (!cleanId) return;
+
+    setRoomId(cleanId);
     setIsHost(data.isHost);
     setIsRoomLocked(data.requireHostApproval);
 
     // Update browser URL to Google Meet path format: /abc-defg-hij
-    if (typeof window !== 'undefined' && window.location.pathname !== `/${cleanRoomId}`) {
-      window.history.pushState({}, '', `/${cleanRoomId}`);
+    if (typeof window !== 'undefined' && window.location.pathname !== `/${cleanId}`) {
+      window.history.pushState({}, '', `/${cleanId}`);
     }
 
     const updatedLocal: Participant = {
@@ -419,9 +386,10 @@ export const App: React.FC = () => {
       isVideoEnabled: data.videoEnabled,
     };
     setLocalParticipant(updatedLocal);
+    localParticipantRef.current = updatedLocal;
 
     // Setup Signaling Channel
-    const signaling = new SignalingService(cleanRoomId, userId);
+    const signaling = new SignalingService(cleanId, userId);
     signalingRef.current = signaling;
     signaling.connect(handleSignalingMessage);
 
@@ -464,48 +432,32 @@ export const App: React.FC = () => {
       console.warn('Could not acquire media stream:', err);
     }
 
-    // Probe room first: checks if room already exists with an active host
+    // Enter meeting immediately!
+    setInMeeting(true);
+    inMeetingRef.current = true;
+    sounds.playJoinChime();
+
+    // Broadcast presence immediately to all participants in this room
     signaling.send({
-      type: 'room-probe',
-      senderName: data.name,
-      payload: { avatarColor },
+      type: 'state-update',
+      payload: {
+        participant: updatedLocal,
+        isRoomLocked: data.requireHostApproval,
+      },
     });
 
-    // If host: enter immediately and broadcast room state
-    if (data.isHost) {
-      setInMeeting(true);
-      sounds.playJoinChime();
-      signaling.send({
-        type: 'state-update',
-        payload: {
-          participant: updatedLocal,
-          isRoomLocked: data.requireHostApproval,
-        },
-      });
-      signaling.send({
-        type: 'room-state',
-        payload: {
-          hostId: userId,
-          isLocked: data.requireHostApproval,
-          hostJoinedAt: updatedLocal.joinedAt,
-        },
-      });
-    } else {
-      // If guest: brief timeout; if no host responded with lock, enter room directly
-      setTimeout(() => {
-        if (!inMeetingRef.current && waitingStatus === 'none') {
-          setInMeeting(true);
-          sounds.playJoinChime();
-          signaling.send({
-            type: 'state-update',
-            payload: {
-              participant: updatedLocal,
-              isRoomLocked: false,
-            },
-          });
-        }
-      }, 700);
-    }
+    // Send a second announcement after 400ms to guarantee sync with any opening tabs
+    setTimeout(() => {
+      if (inMeetingRef.current && signalingRef.current) {
+        signalingRef.current.send({
+          type: 'state-update',
+          payload: {
+            participant: localParticipantRef.current,
+            isRoomLocked: isRoomLockedRef.current,
+          },
+        });
+      }
+    }, 400);
   };
 
   // Toggle Audio
@@ -674,6 +626,7 @@ export const App: React.FC = () => {
     setChatMessages([]);
     setKnockRequests([]);
     setInMeeting(false);
+    inMeetingRef.current = false;
     setWaitingStatus('none');
     setPinnedParticipantId(null);
     setScreenSharingParticipantId(null);
