@@ -11,7 +11,7 @@ function createSyntheticStream(userName: string = 'User'): MediaStream {
   let rafId = 0;
   function draw() {
     if (!ctx) return;
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.beginPath();
@@ -32,7 +32,6 @@ function createSyntheticStream(userName: string = 'User'): MediaStream {
 
   const stream = canvas.captureStream(20);
 
-  // The draw loop used to run forever, burning CPU even after the call ended.
   const stopDrawing = () => {
     if (rafId) {
       cancelAnimationFrame(rafId);
@@ -64,34 +63,27 @@ function createSyntheticStream(userName: string = 'User'): MediaStream {
           try {
             osc.stop();
             actx.close();
-          } catch (e) {
+          } catch {
             /* already closed */
           }
         });
       });
     }
-  } catch (e) {
-    /* audio is optional for the synthetic fallback */
+  } catch {
+    /* audio is optional for synthetic fallback */
   }
 
   return stream;
 }
 
 /**
- * ICE configuration.
- *
- * STUN alone is NOT enough: two participants behind symmetric NAT / mobile carriers /
- * restricted networks (very common) can never establish a direct path without a TURN
- * relay. That is why "signaling works but the call never connects".
- *
- * Override with VITE_TURN_URL / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL.
- * The default below is the public OpenRelay project — fine for testing, but for
- * production you should point this at your own TURN server (e.g. coturn).
+ * ICE configuration with STUN and TURN relays
  */
 function buildIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
   ];
 
@@ -122,9 +114,6 @@ export class WebRTCManager {
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
   private iceQueues: Map<string, RTCIceCandidateInit[]> = new Map();
-  // Two signaling messages arriving in the same tick could both start an offer, because
-  // createOffer() is async and the signaling state is still 'stable' during the await.
-  // That produced glare and duplicate SDP. This set serialises negotiation per peer.
   private negotiating: Set<string> = new Set();
   private signaling: SignalingService;
   private myId: string;
@@ -163,8 +152,7 @@ export class WebRTCManager {
   }
 
   /**
-   * Acquire camera/mic. Retries once because the Lobby preview releases the device
-   * at the same moment we ask for it again (Chrome throws NotReadableError otherwise).
+   * Acquire camera/mic with retry and fallback
    */
   public async getLocalMedia(
     audio: boolean = true,
@@ -172,9 +160,6 @@ export class WebRTCManager {
     audioDeviceId?: string,
     videoDeviceId?: string
   ): Promise<MediaStream> {
-    // Joining with mic AND camera off used to force a microphone permission prompt,
-    // because getUserMedia({audio:false, video:false}) is invalid. Start with an
-    // empty stream instead; tracks are added later via ensureAudioTrack/ensureVideoTrack.
     if (!audio && !video) {
       const empty = new MediaStream();
       if (this.localStream && this.localStream !== empty) {
@@ -189,13 +174,13 @@ export class WebRTCManager {
       const constraints: MediaStreamConstraints = {
         audio: audio
           ? audioDeviceId
-            ? { deviceId: { exact: audioDeviceId }, echoCancellation: true, noiseSuppression: true }
-            : { echoCancellation: true, noiseSuppression: true }
+            ? { deviceId: { exact: audioDeviceId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
           : false,
         video: video
           ? videoDeviceId
-            ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-            : { width: { ideal: 1280 }, height: { ideal: 720 } }
+            ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+            : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
           : false,
       };
       return navigator.mediaDevices.getUserMedia(constraints);
@@ -221,7 +206,6 @@ export class WebRTCManager {
     }
 
     if (!stream) {
-      // Fall back to audio only, then to a synthetic stream so the call still works.
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       } catch (audioErr) {
@@ -230,7 +214,6 @@ export class WebRTCManager {
       }
     }
 
-    // Release the previous stream only after we successfully hold a new one.
     if (this.localStream && this.localStream !== stream) {
       this.localStream.getTracks().forEach((t) => t.stop());
     }
@@ -238,16 +221,12 @@ export class WebRTCManager {
     this.localStream = stream;
     this.setupAudioAnalysis(stream);
 
-    // Push the fresh tracks into every existing peer connection.
+    // Push tracks into all peer connections
     this.syncLocalTracksToPeers();
 
     return stream;
   }
 
-  /**
-   * Re-acquires the microphone when the outgoing audio track is missing (e.g. the user
-   * joined muted, so there was never a track to just re-`enable()`).
-   */
   public async ensureAudioTrack(): Promise<MediaStream | null> {
     if (!this.localStream) return null;
     const existing = this.localStream.getAudioTracks().find((t) => t.readyState === 'live');
@@ -258,7 +237,7 @@ export class WebRTCManager {
     }
     try {
       const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       const track = mic.getAudioTracks()[0];
       if (track) {
@@ -272,10 +251,6 @@ export class WebRTCManager {
     return this.localStream;
   }
 
-  /**
-   * Re-acquires the camera when the outgoing video track is missing. Without this the
-   * "Turn on camera" button was a permanent no-op for anyone who joined with it off.
-   */
   public async ensureVideoTrack(videoDeviceId?: string): Promise<MediaStream | null> {
     if (!this.localStream) return null;
     const existing = this.localStream.getVideoTracks().find((t) => t.readyState === 'live');
@@ -287,8 +262,8 @@ export class WebRTCManager {
     try {
       const cam = await navigator.mediaDevices.getUserMedia({
         video: videoDeviceId
-          ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-          : { width: { ideal: 1280 }, height: { ideal: 720 } },
+          ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+          : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       });
       const track = cam.getVideoTracks()[0];
       if (track) {
@@ -301,18 +276,10 @@ export class WebRTCManager {
     return this.localStream;
   }
 
-  /**
-   * Applies the current local camera/mic (or screen share) tracks to all peer
-   * connections. Peer connections created before media was ready hold placeholder
-   * transceivers, so this is what actually makes them carry audio/video.
-   *
-   * A missing track is pushed as `null` on purpose: otherwise the peer keeps sending
-   * the previous (already stopped) screen-share track and sees a frozen frame.
-   */
   public syncLocalTracksToPeers() {
-    const micTrack = this.localStream?.getAudioTracks()[0] || null;
-    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
-    const videoTrack = this.screenStream?.getVideoTracks()[0] || camTrack;
+    const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
+    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
+    const videoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || camTrack;
 
     this.peerConnections.forEach((pc) => {
       if (pc.signalingState === 'closed') return;
@@ -343,15 +310,13 @@ export class WebRTCManager {
       if (!this.audioContext) return;
 
       if (this.audioContext.state === 'suspended') {
-        this.audioContext.resume();
+        this.audioContext.resume().catch(() => {});
       }
 
-      // Detach the previous source, otherwise every device change leaks a live
-      // MediaStreamSource feeding the analyser.
       if (this.audioSource) {
         try {
           this.audioSource.disconnect();
-        } catch (e) {
+        } catch {
           /* already detached */
         }
         this.audioSource = null;
@@ -361,6 +326,7 @@ export class WebRTCManager {
       this.audioSource = source;
       this.audioAnalyser = this.audioContext.createAnalyser();
       this.audioAnalyser.fftSize = 256;
+      this.audioAnalyser.smoothingTimeConstant = 0.4;
       source.connect(this.audioAnalyser);
 
       const bufferLength = this.audioAnalyser.frequencyBinCount;
@@ -380,7 +346,7 @@ export class WebRTCManager {
         const average = sum / bufferLength;
         const normalized = Math.min(100, Math.round((average / 128) * 100));
         this.onAudioLevelChange(normalized);
-      }, 100);
+      }, 80);
     } catch (e) {
       console.warn('Audio analysis setup error:', e);
     }
@@ -392,6 +358,7 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
+    this.syncLocalTracksToPeers();
   }
 
   public toggleVideo(enabled: boolean) {
@@ -401,9 +368,8 @@ export class WebRTCManager {
       });
     }
 
-    // If not sharing screen, update the outgoing video track on every peer.
     if (!this.screenStream) {
-      const camTrack = enabled ? this.localStream?.getVideoTracks()[0] || null : null;
+      const camTrack = enabled ? this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null : null;
       this.peerConnections.forEach((pc) => {
         if (pc.signalingState === 'closed') return;
         pc.getTransceivers().forEach((transceiver) => {
@@ -428,7 +394,6 @@ export class WebRTCManager {
       const screenTrack = screenStream.getVideoTracks()[0];
 
       if (screenTrack) {
-        // Replace video track in all active peer connections
         this.peerConnections.forEach((pc) => {
           if (pc.signalingState === 'closed') return;
           const videoTransceiver = pc
@@ -466,17 +431,12 @@ export class WebRTCManager {
       this.screenStream.getTracks().forEach((t) => t.stop());
       this.screenStream = null;
     }
-    // Restore camera video track to peer connections if camera is enabled
     this.syncLocalTracksToPeers();
   }
 
   public createPeerConnection(targetPeerId: string, initiator: boolean): RTCPeerConnection {
     if (this.peerConnections.has(targetPeerId)) {
       const existing = this.peerConnections.get(targetPeerId)!;
-      // Presence heartbeats re-announce every peer every few seconds, which lands here
-      // repeatedly. Re-offering each time caused a constant renegotiation loop (and glare)
-      // on every already-connected peer, so only offer while the connection is still
-      // unnegotiated.
       const alreadyNegotiated =
         Boolean(existing.currentRemoteDescription) ||
         existing.connectionState === 'connected' ||
@@ -491,13 +451,10 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     this.peerConnections.set(targetPeerId, pc);
 
-    // Always reserve BOTH m-lines as sendrecv. If the local camera/mic is not ready yet
-    // (very common right after joining) the transceiver still exists, so the tracks can
-    // be attached later with replaceTrack() — no renegotiation, no silent black video.
-    const audioTrack = this.localStream?.getAudioTracks()[0] || null;
+    const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
     const activeVideoTrack = this.screenStream
       ? this.screenStream.getVideoTracks()[0]
-      : this.localStream?.getVideoTracks()[0] || null;
+      : this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
     const activeVideoStream = this.screenStream || this.localStream;
 
     try {
@@ -540,7 +497,6 @@ export class WebRTCManager {
       console.log(`[WebRTC] Received remote track from ${targetPeerId}:`, event.track.kind);
       const remoteStream = event.streams[0] || new MediaStream([event.track]);
 
-      // Merge all tracks from this peer into a unified remote stream
       const currentStream = this.remoteStreams.get(targetPeerId);
       if (currentStream) {
         if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
@@ -553,9 +509,6 @@ export class WebRTCManager {
       }
     };
 
-    // Connection State.
-    // The old handler fell through to closePeer() even after kicking off an ICE
-    // restart, so the restart never had a chance to complete.
     let restartAttempts = 0;
     let disconnectTimer: number | null = null;
 
@@ -593,7 +546,6 @@ export class WebRTCManager {
       }
 
       if (state === 'disconnected') {
-        // 'disconnected' is often transient — give it a few seconds before tearing down.
         if (disconnectTimer === null) {
           disconnectTimer = window.setTimeout(() => {
             disconnectTimer = null;
@@ -610,7 +562,6 @@ export class WebRTCManager {
       }
     };
 
-    // If initiator, create and send initial offer
     if (initiator) {
       this.initiateOffer(targetPeerId, pc);
     }
@@ -623,8 +574,6 @@ export class WebRTCManager {
     this.negotiating.add(targetPeerId);
     try {
       if (pc.signalingState !== 'stable') return;
-      // `force` is used by the ICE-restart path, which legitimately re-offers on a
-      // connection that already has a remote description.
       if (pc.currentRemoteDescription && !force) return;
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -650,7 +599,6 @@ export class WebRTCManager {
     try {
       const pc = this.createPeerConnection(senderId, false);
 
-      // Handle glare: if we made an offer and received an offer
       if (pc.signalingState !== 'stable') {
         try {
           await pc.setLocalDescription({ type: 'rollback' });
@@ -695,7 +643,6 @@ export class WebRTCManager {
   public async handleIceCandidate(senderId: string, candidate: RTCIceCandidateInit) {
     const pc = this.peerConnections.get(senderId);
     if (!pc || !pc.remoteDescription || !pc.remoteDescription.type) {
-      // Buffer until remote description is set
       if (!this.iceQueues.has(senderId)) {
         this.iceQueues.set(senderId, []);
       }
@@ -745,7 +692,7 @@ export class WebRTCManager {
     if (this.audioSource) {
       try {
         this.audioSource.disconnect();
-      } catch (e) {
+      } catch {
         /* already detached */
       }
       this.audioSource = null;
@@ -766,7 +713,7 @@ export class WebRTCManager {
     this.peerConnections.forEach((pc) => {
       try {
         pc.close();
-      } catch (e) {
+      } catch {
         /* already closed */
       }
     });

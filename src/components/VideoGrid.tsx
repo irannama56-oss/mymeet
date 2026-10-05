@@ -61,18 +61,14 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
           : remoteStreams.get(spotlightParticipant.id) || null;
     }
 
-    // Remaining participants for the side/bottom thumbnail strip
     const remainingParticipants = allParticipants.filter(
       (p) => p.id !== spotlightParticipant.id
     );
 
-    // The spotlight tile can be the local user (screen sharing, or pinned). Passing the
-    // real "is this me" flag is what stops the tile from rendering an unmuted <audio>
-    // element pointed at our own microphone / screen audio — i.e. hearing yourself.
     const isSpotlightLocal = spotlightParticipant.id === localParticipant.id;
 
     return (
-      <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-2 sm:p-4 overflow-hidden">
+      <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-2 sm:p-4 overflow-hidden max-w-7xl mx-auto">
         {/* Main Spotlight Area (Large Viewport) */}
         <div className="flex-1 h-[55vh] sm:h-[60vh] lg:h-full relative min-h-0 min-w-0">
           <VideoTile
@@ -85,9 +81,9 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
           />
         </div>
 
-        {/* Thumbnail Strip (Participants Sidebar / Bottom Carousel on Mobile) */}
+        {/* Thumbnail Strip (Participants Sidebar on Desktop / Carousel on Mobile) */}
         <div className="lg:w-72 xl:w-80 h-36 lg:h-full flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto shrink-0 pb-2 lg:pb-0">
-          {/* If screen sharing, show the presenter's camera tile in the strip */}
+          {/* If screen sharing, show presenter camera in thumbnail strip (disable audio on thumbnail to prevent duplicate audio) */}
           {isScreenSharingActive && (
             <div className="w-48 sm:w-56 lg:w-full h-full lg:h-44 shrink-0">
               <VideoTile
@@ -100,6 +96,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
                 isLocal={isSharerLocal}
                 onTogglePin={onTogglePin}
                 isScreenShareTile={false}
+                disableAudio={true}
               />
             </div>
           )}
@@ -134,15 +131,15 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   const getGridClasses = () => {
     switch (count) {
       case 1:
-        return 'grid-cols-1 max-w-4xl mx-auto h-full max-h-[85vh]';
+        return 'grid-cols-1 max-w-4xl mx-auto h-full max-h-[82vh]';
       case 2:
-        return 'grid-cols-1 md:grid-cols-2 max-w-5xl mx-auto h-full max-h-[85vh]';
+        return 'grid-cols-1 md:grid-cols-2 max-w-5xl mx-auto h-full max-h-[82vh]';
       case 3:
       case 4:
-        return 'grid-cols-1 sm:grid-cols-2 grid-rows-2 max-w-6xl mx-auto h-full max-h-[88vh]';
+        return 'grid-cols-1 sm:grid-cols-2 grid-rows-2 max-w-6xl mx-auto h-full max-h-[85vh]';
       case 5:
       case 6:
-        return 'grid-cols-2 md:grid-cols-3 max-w-7xl mx-auto h-full max-h-[88vh]';
+        return 'grid-cols-2 md:grid-cols-3 max-w-7xl mx-auto h-full max-h-[85vh]';
       default:
         return 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 max-w-7xl mx-auto h-full';
     }

@@ -61,6 +61,7 @@ export type SignalingMessageType =
   | 'state-update'
   | 'hand-raise'
   | 'host-lock-toggle'
+  | 'host-mute-all'
   | 'host-kick';
 
 export interface SignalingMessage {
@@ -73,13 +74,21 @@ export interface SignalingMessage {
 }
 
 /**
- * Room codes are generated as `abc-defg-hij`. A URL path segment is only treated as a
- * room slug when it actually looks like a code (at least two dash separated groups).
- * Without this guard, paths such as `/app` or `/preview` were silently treated as rooms.
+ * Validates whether an input slug is a valid room identifier.
+ * Accepts standard 3-part codes (abc-defg-hij) and custom room names (team-sync, project-review, room101).
+ * Filters out common static app routes and file extensions.
  */
 export function isRoomCodeLike(input: string): boolean {
   const code = cleanRoomCode(input);
-  return /^[a-z0-9]{2,}(-[a-z0-9]{2,})+$/.test(code);
+  if (!code || code.length < 2 || code.length > 50) return false;
+  
+  const reservedPaths = [
+    'app', 'preview', 'assets', 'favicon', 'index', 'robots', 
+    'sitemap', 'api', 'login', 'signup', 'settings', 'dist', 'src'
+  ];
+  if (reservedPaths.includes(code)) return false;
+  
+  return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(code);
 }
 
 export function cleanRoomCode(input: string): string {
@@ -101,4 +110,3 @@ export function cleanRoomCode(input: string): string {
   str = str.replace(/[^a-z0-9-]/g, '');
   return str;
 }
-

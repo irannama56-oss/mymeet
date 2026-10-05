@@ -1,11 +1,9 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { SignalingMessage, cleanRoomCode, Participant } from './types';
 
-const DEFAULT_SUPABASE_URL = 'https://mqnmkzitqtpzfnkkrlnf.supabase.co';
-const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xbm1reml0cXRwemZua2tybG5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExMzU4MDUsImV4cCI6MjEwNjcxMTgwNX0.FULEA-fKDRlonaX9COzt_1fkf005pqZNQK-BT___E40';
-
 function isInvalidOrPlaceholder(val: string): boolean {
-  if (!val || val.length < 10) return true;
+  if (!val || val.trim().length < 10) return true;
+  if (val.includes('...')) return true;
   return /your[-_]?(project|supabase)|example\.com|changeme|xxxxx/i.test(val);
 }
 
@@ -25,8 +23,8 @@ export function getSupabaseCredentials(): { url: string; key: string } {
   const envUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || '').trim();
   const envKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '').trim();
 
-  const finalUrl = localUrl || (isInvalidOrPlaceholder(envUrl) ? '' : envUrl) || DEFAULT_SUPABASE_URL;
-  const finalKey = localKey || (isInvalidOrPlaceholder(envKey) ? '' : envKey) || DEFAULT_SUPABASE_ANON_KEY;
+  const finalUrl = localUrl || (isInvalidOrPlaceholder(envUrl) ? '' : envUrl);
+  const finalKey = localKey || (isInvalidOrPlaceholder(envKey) ? '' : envKey);
 
   return { url: finalUrl, key: finalKey };
 }
@@ -35,7 +33,7 @@ export function isSupabaseReady(): boolean {
   const { url, key } = getSupabaseCredentials();
   if (!url || !key) return false;
   if (!url.startsWith('http')) return false;
-  return !isInvalidOrPlaceholder(url + key);
+  return !isInvalidOrPlaceholder(url) && !isInvalidOrPlaceholder(key);
 }
 
 let clientInstance: SupabaseClient | null = null;
@@ -400,7 +398,7 @@ export class SignalingService {
     const client = getSupabaseClient();
 
     if (!client) {
-      // No cloud transport available: only same-browser tabs will ever see each other.
+      // Local Mesh mode (zero-latency BroadcastChannel for browser tabs)
       this.setStatus('disabled');
     } else {
       this.setStatus('connecting');
@@ -453,8 +451,7 @@ export class SignalingService {
             this.retryCount = 0;
             this.setStatus('connected');
             this.flushPendingOutbound();
-            // Announce ourselves so other peers can discover us even if our
-            // broadcast handshake was lost.
+            // Announce presence
             this.channel?.track({ userId: this.userId, joinedAt: Date.now() }).catch(() => {});
             return;
           }
@@ -472,7 +469,7 @@ export class SignalingService {
     }
   }
 
-  /** A dropped websocket used to silently kill the room; now it retries with backoff. */
+  /** Dropped connection resubscribe with backoff */
   private scheduleResubscribe(client: SupabaseClient) {
     if (this.disposed || this.retryTimer !== null) return;
     if (this.retryCount >= 6) return;
@@ -535,10 +532,6 @@ export class SignalingService {
     }
   }
 
-  /**
-   * Bounded queue: while the channel is down, heartbeats kept piling up and would all be
-   * flushed at once on reconnect (a burst of stale state updates).
-   */
   private queueOutbound(msg: InternalSignalingMessage) {
     const MAX_QUEUE = 60;
     this.pendingOutboundQueue.push(msg);
@@ -571,7 +564,6 @@ export class SignalingService {
           this.queueOutbound(fullMessage);
         });
       } else {
-        // Queue until SUBSCRIBED
         this.queueOutbound(fullMessage);
       }
     }

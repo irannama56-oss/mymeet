@@ -32,11 +32,6 @@ import { RoomNotFoundModal } from './components/RoomNotFoundModal';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { NoticeModal } from './components/NoticeModal';
 
-/**
- * A peer that stops heartbeating for this long is considered gone. Deliberately generous:
- * browsers throttle timers in background tabs, so a shorter window would evict people who
- * simply switched tabs.
- */
 const PEER_TIMEOUT_MS = 45000;
 
 const AVATAR_COLORS = [
@@ -48,12 +43,9 @@ const AVATAR_COLORS = [
   'from-violet-500 to-fuchsia-600',
 ];
 
-// Helper to extract room slug from pathname (/abc-defg-hij) or ?room= query
 const getRoomSlugFromUrl = (): string => {
   if (typeof window === 'undefined') return '';
   const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
-  // Only treat a path segment as a room when it actually looks like a room code,
-  // otherwise paths such as /app or /preview would silently become "rooms".
   if (pathname && !pathname.includes('.') && isRoomCodeLike(pathname)) {
     return cleanRoomCode(pathname);
   }
@@ -69,8 +61,6 @@ export const App: React.FC = () => {
   // Session & UI States
   const [inMeeting, setInMeeting] = useState(false);
   const [waitingStatus, setWaitingStatus] = useState<'none' | 'waiting' | 'declined'>('none');
-  // 'probing'  -> we asked the room whether a host is already there
-  // 'not-found'-> nobody answered: the user decides to create the room or go back
   const [joinPhase, setJoinPhase] = useState<'idle' | 'probing' | 'not-found'>('idle');
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('connecting');
   const [roomId, setRoomId] = useState('');
@@ -112,6 +102,13 @@ export const App: React.FC = () => {
   const [floatingEmojis, setFloatingEmojis] = useState<{ id: string; emoji: string; left: number }[]>([]);
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
 
+  // Push to talk state
+  const spacePressedRef = useRef(false);
+  const preSpaceMutedRef = useRef(false);
+
+  // Speaking debounce ref
+  const speakingTimeoutRef = useRef<number | null>(null);
+
   // Refs for access in callbacks
   const webrtcRef = useRef<WebRTCManager | null>(null);
   const signalingRef = useRef<SignalingService | null>(null);
@@ -122,28 +119,22 @@ export const App: React.FC = () => {
   const inMeetingRef = useRef(inMeeting);
   inMeetingRef.current = inMeeting;
   const roomIdRef = useRef('');
-  // Latest signaling handler, so the transport never calls a stale closure.
   const signalingHandlerRef = useRef<(msg: SignalingMessage) => void>(() => {});
   const joinPhaseRef = useRef<'idle' | 'probing' | 'not-found'>('idle');
-  // Room-existence probe timers
   const probeTimersRef = useRef<number[]>([]);
   const pendingRoomRef = useRef<string>('');
   const remoteParticipantsRef = useRef<Participant[]>([]);
   remoteParticipantsRef.current = remoteParticipants;
-  // Last time we heard from each peer. A tab that is closed or crashes never sends
-  // `peer-left`, so without this the participant list kept ghosts forever.
   const lastSeenRef = useRef<Map<string, number>>(new Map());
-  // Guards against starting two getDisplayMedia captures from a double click.
   const screenShareBusyRef = useRef(false);
   const knockRequestsRef = useRef<KnockRequest[]>([]);
   knockRequestsRef.current = knockRequests;
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   chatMessagesRef.current = chatMessages;
-  // Media acquisition must not run twice in parallel (join + a fast device toggle).
   const mediaBusyRef = useRef(false);
   const emojiTimersRef = useRef<number[]>([]);
 
-  // Initial room detection from URL pathname (/slug)
+  // Initial room detection from URL pathname
   const [initialRoomParam, setInitialRoomParam] = useState(getRoomSlugFromUrl);
 
   useEffect(() => {
@@ -196,19 +187,14 @@ export const App: React.FC = () => {
     probeTimersRef.current = [];
   }, []);
 
-  // Acquire camera/mic in the background. The meeting UI opens immediately so a slow
-  // permission prompt can never look like "the Join button does nothing".
+  // Acquire camera/mic in background
   const startLocalMedia = useCallback(async () => {
     const webrtc = webrtcRef.current;
     if (!webrtc || mediaBusyRef.current) return;
     mediaBusyRef.current = true;
     try {
-      // Read the flags from the ref so a toggle that happened while the room was opening
-      // is honoured instead of the values captured when the user pressed Join.
       const p = localParticipantRef.current;
       const stream = await webrtc.getLocalMedia(p.isAudioEnabled, p.isVideoEnabled);
-      // If the user left while the permission prompt was open, the manager is already gone
-      // and the freshly acquired tracks would otherwise keep the camera light on forever.
       if (webrtcRef.current !== webrtc) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -219,7 +205,7 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // The single place that actually puts us inside the room.
+  // The single place that enters the room
   const enterRoom = useCallback(() => {
     clearProbeTimers();
     setJoinPhase('idle');
@@ -245,11 +231,9 @@ export const App: React.FC = () => {
       });
     }
 
-    // Media is fetched after the room view is on screen (the Lobby preview must
-    // release the camera first).
     window.setTimeout(() => {
       void startLocalMedia();
-    }, 150);
+    }, 120);
   }, [clearProbeTimers, startLocalMedia]);
 
   // Handle incoming signaling messages
@@ -274,7 +258,7 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 0.5 A host answered our probe: the room exists, join it (or knock if locked)
+      // 0.5 A host answered our probe
       case 'room-state':
         if (!inMeetingRef.current && joinPhaseRef.current === 'probing') {
           clearProbeTimers();
@@ -297,8 +281,6 @@ export const App: React.FC = () => {
       // 1. Host receives join request / knock
       case 'join-request':
         if (localParticipantRef.current.isHost) {
-          // Only alert for a genuinely new knock — a repeated request from the same
-          // guest must not re-trigger the sound while the host is deciding.
           const alreadyPending = knockRequestsRef.current.some(
             (k) => k.participantId === msg.senderId
           );
@@ -357,17 +339,15 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 7. Remote Participant State Update (Sync names, camera, mic, screen share, presence)
+      // 7. Remote Participant State Update
       case 'state-update':
-        // Only peers that are actually inside the room take part in the mesh. While we
-        // are still probing a room code we must not announce ourselves as present.
         if (!inMeetingRef.current) break;
         if (msg.payload?.participant) {
           const remoteP: Participant = msg.payload.participant;
           const isNewPeer = !remoteParticipantsRef.current.some((p) => p.id === remoteP.id);
           lastSeenRef.current.set(remoteP.id, Date.now());
 
-          // Prevent duplicate host collision with same slug: Seniority rule
+          // Prevent duplicate host collision: Seniority rule
           if (remoteP.isHost && localParticipantRef.current.isHost && remoteP.id !== userId) {
             const remoteJoinedAt = remoteP.joinedAt || 0;
             const localJoinedAt = localParticipantRef.current.joinedAt || 0;
@@ -386,16 +366,12 @@ export const App: React.FC = () => {
             }
           }
 
-          // If remote participant is sharing screen, update spotlight ID
           if (remoteP.isScreenSharing) {
             setScreenSharingParticipantId(remoteP.id);
           } else if (screenSharingParticipantId === remoteP.id) {
             setScreenSharingParticipantId(null);
           }
 
-          // Add or update participant in list.
-          // The chime is played here rather than inside the state updater: updaters must be
-          // pure, and React (StrictMode) can invoke them twice.
           if (isNewPeer) {
             sounds.playJoinChime();
           }
@@ -407,16 +383,12 @@ export const App: React.FC = () => {
             return [...prev, remoteP];
           });
 
-          // Connect WebRTC peer connection immediately
           connectPeer(remoteP.id);
 
-          // Sync room locked state if sent from host
           if (remoteP.isHost && msg.payload.isRoomLocked !== undefined) {
             setIsRoomLocked(msg.payload.isRoomLocked);
           }
 
-          // A newcomer announced itself (un-targeted broadcast): answer once so it can
-          // discover us. Heartbeats from known peers are ignored to avoid chatter.
           if (!msg.targetId && msg.senderId !== userId && isNewPeer) {
             signaling.send({
               type: 'state-update',
@@ -427,7 +399,6 @@ export const App: React.FC = () => {
               },
             });
 
-            // The host owns the chat backlog — hand it to the newcomer once.
             if (localParticipantRef.current.isHost && chatMessagesRef.current.length > 0) {
               signaling.send({
                 type: 'chat-history',
@@ -454,6 +425,7 @@ export const App: React.FC = () => {
       case 'chat-message':
         if (msg.payload) {
           const newChat: ChatMessage = msg.payload;
+          sounds.playMessagePop();
           setChatMessages((prev) =>
             prev.some((m) => m.id === newChat.id) ? prev : [...prev, newChat]
           );
@@ -463,8 +435,7 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 9.5 Chat backlog sent by the host to a newcomer, so a late joiner does not see
-      // an empty conversation while everyone else can read it.
+      // 9.5 Chat backlog
       case 'chat-history': {
         const incoming: ChatMessage[] = msg.payload?.messages || [];
         if (incoming.length === 0) break;
@@ -483,7 +454,7 @@ export const App: React.FC = () => {
         break;
       }
 
-      // 10. Reactions (Floating Emojis)
+      // 10. Reactions
       case 'reaction':
         if (msg.payload?.emoji) {
           triggerFloatingEmoji(msg.payload.emoji);
@@ -521,10 +492,9 @@ export const App: React.FC = () => {
     clearProbeTimers,
   ]);
 
-  // Always hand the transport the newest handler (avoids stale-closure signaling bugs).
   signalingHandlerRef.current = handleSignalingMessage;
 
-  // Periodic presence heartbeat while in meeting to keep all tabs in sync
+  // Periodic presence heartbeat while in meeting
   useEffect(() => {
     if (!inMeeting) return;
     const interval = setInterval(() => {
@@ -541,9 +511,7 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [inMeeting]);
 
-  // Drop peers that stopped heartbeating (closed tab, crashed browser, lost network).
-  // Skipped while our own transport is unhealthy, otherwise we would evict everyone
-  // just because *we* cannot hear them.
+  // Drop peers that stopped heartbeating
   useEffect(() => {
     if (!inMeeting) return;
     const interval = window.setInterval(() => {
@@ -565,7 +533,7 @@ export const App: React.FC = () => {
     return () => window.clearInterval(interval);
   }, [inMeeting, realtimeStatus]);
 
-  // Keep DB and presence heartbeat alive while in meeting
+  // Keep DB and presence heartbeat alive
   useEffect(() => {
     if (!inMeeting || !roomId) return;
     void dbHeartbeat(roomId, userId);
@@ -576,7 +544,7 @@ export const App: React.FC = () => {
     return () => window.clearInterval(interval);
   }, [inMeeting, roomId, userId]);
 
-  // Closing the tab notifies peers and updates database
+  // Closing tab notifies peers
   useEffect(() => {
     if (!inMeeting) return;
 
@@ -601,8 +569,8 @@ export const App: React.FC = () => {
   const triggerFloatingEmoji = (emoji: string) => {
     if (emoji === '🎉') {
       confetti({
-        particleCount: 50,
-        spread: 60,
+        particleCount: 60,
+        spread: 70,
         origin: { y: 0.8 },
       });
     }
@@ -614,7 +582,7 @@ export const App: React.FC = () => {
     const timer = window.setTimeout(() => {
       setFloatingEmojis((prev) => prev.filter((item) => item.id !== newId));
       emojiTimersRef.current = emojiTimersRef.current.filter((t) => t !== timer);
-    }, 2000);
+    }, 2200);
     emojiTimersRef.current.push(timer);
   };
 
@@ -648,7 +616,7 @@ export const App: React.FC = () => {
     setLocalParticipant(updatedLocal);
     localParticipantRef.current = updatedLocal;
 
-    // Synchronize / Validate with Supabase Database
+    // Synchronize with Supabase Database if available
     const dbResult = await dbJoinOrCreateRoom({
       code: cleanId,
       userId,
@@ -669,12 +637,10 @@ export const App: React.FC = () => {
     // Setup Signaling Channel
     const signaling = new SignalingService(cleanId, userId);
     signalingRef.current = signaling;
-    // A stable wrapper: the transport always reaches the latest handler.
     signaling.connect((msg) => signalingHandlerRef.current(msg));
     signaling.onStatusChange(setRealtimeStatus);
 
-    // Presence is the reliable discovery channel: if a handshake broadcast was lost,
-    // presence still tells us who is in the room so we can greet them directly.
+    // Setup Presence
     signaling.onPresence((peerIds) => {
       if (!inMeetingRef.current) return;
       peerIds.forEach((peerId) => {
@@ -694,7 +660,7 @@ export const App: React.FC = () => {
     const webrtc = new WebRTCManager(signaling, userId, handleRemoteStreamUpdate);
     webrtcRef.current = webrtc;
 
-    // Handle screen share ended from browser native UI bar
+    // Handle screen share ended
     webrtc.setScreenShareEndedCallback(() => {
       setScreenStream(null);
       setScreenSharingParticipantId(null);
@@ -705,29 +671,49 @@ export const App: React.FC = () => {
       });
     });
 
-    // Detect speaking levels
+    // Detect speaking levels with smoothing and debounce
     webrtc.setAudioLevelCallback((level) => {
-      const isSpeaking = level > 25 && localParticipantRef.current.isAudioEnabled;
-      setLocalParticipant((prev) => {
-        if (prev.isSpeaking !== isSpeaking) {
-          const next = { ...prev, isSpeaking, audioLevel: level };
-          signaling.send({
-            type: 'state-update',
-            payload: { participant: next },
-          });
-          return next;
+      const isVoiceDetected = level > 25 && localParticipantRef.current.isAudioEnabled;
+
+      if (isVoiceDetected) {
+        if (speakingTimeoutRef.current) {
+          window.clearTimeout(speakingTimeoutRef.current);
+          speakingTimeoutRef.current = null;
         }
-        return prev;
-      });
+        if (!localParticipantRef.current.isSpeaking) {
+          setLocalParticipant((prev) => {
+            const next = { ...prev, isSpeaking: true, audioLevel: level };
+            signaling.send({
+              type: 'state-update',
+              payload: { participant: next },
+            });
+            return next;
+          });
+        }
+      } else {
+        if (localParticipantRef.current.isSpeaking && !speakingTimeoutRef.current) {
+          speakingTimeoutRef.current = window.setTimeout(() => {
+            speakingTimeoutRef.current = null;
+            setLocalParticipant((prev) => {
+              const next = { ...prev, isSpeaking: false, audioLevel: 0 };
+              signaling.send({
+                type: 'state-update',
+                payload: { participant: next },
+              });
+              return next;
+            });
+          }, 350);
+        }
+      }
     });
 
-    // If host created the meeting or DB confirms host:
+    // If host created the meeting
     if (data.isHost || dbResult.isHost) {
       enterRoom();
       return;
     }
 
-    // If room is locked according to DB:
+    // If room is locked in DB
     if (dbResult.isLocked) {
       setIsRoomLocked(true);
       isRoomLockedRef.current = true;
@@ -740,25 +726,40 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Unlocked existing room: enter directly and connect with all existing active peers from DB
-    const existingActivePeers = await dbGetActiveParticipants(cleanId, userId);
-    if (existingActivePeers.length > 0) {
-      setRemoteParticipants(existingActivePeers);
-      remoteParticipantsRef.current = existingActivePeers;
-      existingActivePeers.forEach((peer) => {
-        lastSeenRef.current.set(peer.id, Date.now());
-        connectPeer(peer.id);
-      });
-    }
+    // Probing for active host in mesh/signaling
+    setJoinPhase('probing');
+    joinPhaseRef.current = 'probing';
+    
+    // Send probe
+    signaling.send({
+      type: 'room-probe',
+      senderName: data.name,
+    });
 
-    enterRoom();
+    // Fallback timer: if no host responds in 2.5s and DB has active peers
+    const probeTimeout = window.setTimeout(async () => {
+      if (joinPhaseRef.current === 'probing' && !inMeetingRef.current) {
+        const existingActivePeers = await dbGetActiveParticipants(cleanId, userId);
+        if (existingActivePeers.length > 0) {
+          setRemoteParticipants(existingActivePeers);
+          remoteParticipantsRef.current = existingActivePeers;
+          existingActivePeers.forEach((peer) => {
+            lastSeenRef.current.set(peer.id, Date.now());
+            connectPeer(peer.id);
+          });
+          enterRoom();
+        } else {
+          // If no response from any host, allow entering directly or show room prompt
+          enterRoom();
+        }
+      }
+    }, 2000);
+    probeTimersRef.current.push(probeTimeout);
   };
 
-  // The room code does not exist yet — the user chose to open it as the host.
   const handleStartMissingRoom = async () => {
     sounds.playClick();
     setIsHost(true);
-    // Update the ref synchronously so the very first broadcast already says "host".
     const next: Participant = { ...localParticipantRef.current, isHost: true, joinedAt: Date.now() };
     localParticipantRef.current = next;
     setLocalParticipant(next);
@@ -803,8 +804,6 @@ export const App: React.FC = () => {
 
   // Toggle Audio
   const handleToggleAudio = async () => {
-    // Read from the ref, not the render closure: two fast clicks used to compute the
-    // same "next" value and leave the button out of sync with the real track.
     const prev = localParticipantRef.current;
     const nextState = !prev.isAudioEnabled;
     const updated = { ...prev, isAudioEnabled: nextState };
@@ -816,7 +815,6 @@ export const App: React.FC = () => {
     if (!webrtc) return;
 
     if (nextState) {
-      // The user may have joined muted, so there was never a track to just re-enable.
       const stream = await webrtc.ensureAudioTrack();
       if (stream) setLocalStream(stream);
     } else {
@@ -862,7 +860,6 @@ export const App: React.FC = () => {
       return;
     }
 
-    // getDisplayMedia takes a moment; without the guard a double click opened two captures.
     screenShareBusyRef.current = true;
     try {
       const stream = await webrtc.startScreenShare();
@@ -985,7 +982,6 @@ export const App: React.FC = () => {
       void dbLeaveRoom(targetCode, userId);
     }
 
-    // Reset URL back to root
     if (typeof window !== 'undefined' && window.location.pathname !== '/') {
       window.history.pushState({}, '', '/');
     }
@@ -1019,7 +1015,6 @@ export const App: React.FC = () => {
     setPinnedParticipantId(null);
     setScreenSharingParticipantId(null);
     setUnreadChatCount(0);
-    // Otherwise these drawers reappear open the next time the user joins.
     setIsChatOpen(false);
     setIsParticipantsOpen(false);
     setIsSettingsOpen(false);
@@ -1028,18 +1023,94 @@ export const App: React.FC = () => {
     isRoomLockedRef.current = false;
   };
 
-  // Safety net: never leave the camera/mic running if the app unmounts mid-call.
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    if (!inMeeting) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+
+      if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        sounds.playClick();
+        void handleToggleAudio();
+      } else if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        sounds.playClick();
+        void handleToggleVideo();
+      } else if (e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        sounds.playHandRaise();
+        handleToggleHandRaise();
+      } else if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        sounds.playClick();
+        setIsChatOpen((prev) => {
+          const next = !prev;
+          if (next) {
+            setIsParticipantsOpen(false);
+            setUnreadChatCount(0);
+          }
+          return next;
+        });
+      } else if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        sounds.playClick();
+        setIsParticipantsOpen((prev) => {
+          const next = !prev;
+          if (next) setIsChatOpen(false);
+          return next;
+        });
+      } else if (e.key === 'Escape') {
+        setIsChatOpen(false);
+        setIsParticipantsOpen(false);
+        setIsSettingsOpen(false);
+      } else if (e.code === 'Space' && !spacePressedRef.current) {
+        // Push to talk when muted
+        if (!localParticipantRef.current.isAudioEnabled) {
+          e.preventDefault();
+          spacePressedRef.current = true;
+          preSpaceMutedRef.current = true;
+          void handleToggleAudio();
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && spacePressedRef.current) {
+        e.preventDefault();
+        spacePressedRef.current = false;
+        if (preSpaceMutedRef.current && localParticipantRef.current.isAudioEnabled) {
+          void handleToggleAudio();
+        }
+        preSpaceMutedRef.current = false;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [inMeeting]);
+
+  // Unmount safety net
   useEffect(() => {
     return () => {
       emojiTimersRef.current.forEach((t) => window.clearTimeout(t));
       emojiTimersRef.current = [];
+      if (speakingTimeoutRef.current) {
+        window.clearTimeout(speakingTimeoutRef.current);
+      }
       if (signalingRef.current) {
         try {
           signalingRef.current.send({ type: 'peer-left' });
           signalingRef.current.disconnect();
-        } catch (e) {
-          /* already gone */
-        }
+        } catch {}
         signalingRef.current = null;
       }
       if (webrtcRef.current) {
@@ -1049,13 +1120,11 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Change Device Input
+  // Change Device Input from Settings
   const handleDeviceChange = async (audioId: string, videoId: string) => {
     const webrtc = webrtcRef.current;
     if (!webrtc) return;
     const prev = localParticipantRef.current;
-    // Ask for the camera whenever the user currently has video on, otherwise the new
-    // stream would silently drop the video track and "turn on camera" would stop working.
     const stream = await webrtc.getLocalMedia(
       prev.isAudioEnabled,
       prev.isVideoEnabled,
@@ -1107,8 +1176,8 @@ export const App: React.FC = () => {
   return (
     <div className="relative w-screen h-screen bg-dark-950 text-slate-100 overflow-hidden select-none flex flex-col justify-between">
       {/* Background ambient radial glows */}
-      <div className="absolute top-1/3 left-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[140px] pointer-events-none -z-10" />
-      <div className="absolute bottom-1/3 right-1/4 w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[140px] pointer-events-none -z-10" />
+      <div className="absolute top-1/3 left-1/4 w-[600px] h-[600px] bg-indigo-600/10 rounded-full blur-[150px] pointer-events-none -z-10 animate-pulse-subtle" />
+      <div className="absolute bottom-1/3 right-1/4 w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[150px] pointer-events-none -z-10 animate-pulse-subtle" />
 
       {/* Top Header */}
       <MeetingHeader
@@ -1118,7 +1187,7 @@ export const App: React.FC = () => {
         participantsCount={remoteParticipants.length + 1}
       />
 
-      {/* Host Knock Banner (Appears when someone knocks) */}
+      {/* Host Knock Banner */}
       {isHost && (
         <HostKnockBanner
           knockRequests={knockRequests}
@@ -1127,8 +1196,8 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Transport health — makes "I'm alone in the room" explainable */}
-      <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4">
+      {/* Connection Banner (Reconnecting notification) */}
+      <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4 pointer-events-none">
         <ConnectionBanner status={realtimeStatus} />
       </div>
 
@@ -1137,7 +1206,7 @@ export const App: React.FC = () => {
         <div
           key={item.id}
           className="reaction-particle z-50 pointer-events-none"
-          style={{ left: `${item.left}%`, bottom: '100px' }}
+          style={{ left: `${item.left}%`, bottom: '110px' }}
         >
           {item.emoji}
         </div>
@@ -1177,7 +1246,6 @@ export const App: React.FC = () => {
         onToggleChat={() => {
           const next = !isChatOpen;
           setIsChatOpen(next);
-          // The two drawers are both anchored to the right edge — only one at a time.
           if (next) setIsParticipantsOpen(false);
           if (next) setUnreadChatCount(0);
         }}
@@ -1201,7 +1269,7 @@ export const App: React.FC = () => {
         currentUserId={userId}
       />
 
-      {/* Participants & Host Security Drawer */}
+      {/* Participants Drawer */}
       <ParticipantsDrawer
         isOpen={isParticipantsOpen}
         onClose={() => setIsParticipantsOpen(false)}
