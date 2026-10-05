@@ -1,28 +1,41 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { SignalingMessage, cleanRoomCode } from './types';
 
-// Helper to get Supabase credentials from env or localStorage
+const DEFAULT_SUPABASE_URL = 'https://mqnmkzitqtpzfnkkrlnf.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xbm1reml0cXRwemZua2tybG5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExMzU4MDUsImV4cCI6MjEwNjcxMTgwNX0.FULEA-fKDRlonaX9COzt_1fkf005pqZNQK-BT___E40';
+
+function isInvalidOrPlaceholder(val: string): boolean {
+  if (!val || val.length < 10) return true;
+  return /your[-_]?(project|supabase)|example\.com|changeme|xxxxx/i.test(val);
+}
+
+// Helper to get Supabase credentials from env, localStorage, or defaults
 export function getSupabaseCredentials(): { url: string; key: string } {
-  const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  let localUrl = '';
+  let localKey = '';
+  try {
+    if (typeof window !== 'undefined') {
+      localUrl = (localStorage.getItem('aura_supabase_url') || '').trim();
+      localKey = (localStorage.getItem('aura_supabase_key') || '').trim();
+      if (isInvalidOrPlaceholder(localUrl)) localUrl = '';
+      if (isInvalidOrPlaceholder(localKey)) localKey = '';
+    }
+  } catch {}
 
-  const localUrl = typeof window !== 'undefined' ? localStorage.getItem('aura_supabase_url') || '' : '';
-  const localKey = typeof window !== 'undefined' ? localStorage.getItem('aura_supabase_key') || '' : '';
+  const envUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || '').trim();
+  const envKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '').trim();
 
-  const url = (localUrl || envUrl).trim();
-  const key = (localKey || envKey).trim();
+  const finalUrl = localUrl || (isInvalidOrPlaceholder(envUrl) ? '' : envUrl) || DEFAULT_SUPABASE_URL;
+  const finalKey = localKey || (isInvalidOrPlaceholder(envKey) ? '' : envKey) || DEFAULT_SUPABASE_ANON_KEY;
 
-  return { url, key };
+  return { url: finalUrl, key: finalKey };
 }
 
 export function isSupabaseReady(): boolean {
   const { url, key } = getSupabaseCredentials();
   if (!url || !key) return false;
   if (!url.startsWith('http')) return false;
-  // Reject the template values so an unfilled .env never looks "configured" and
-  // silently sends signaling into the void.
-  const isPlaceholder = /your[-_]?(project|supabase)|example\.com|changeme|xxxxx/i.test(url + key);
-  return !isPlaceholder;
+  return !isInvalidOrPlaceholder(url + key);
 }
 
 let clientInstance: SupabaseClient | null = null;
