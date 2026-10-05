@@ -17,6 +17,7 @@ import {
   dbHeartbeat,
   dbUpdateRoomLock,
   dbCloseRoom,
+  dbGetActiveParticipants,
 } from './lib/supabase';
 import {
   Participant,
@@ -739,7 +740,17 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Unlocked existing room: enter directly!
+    // Unlocked existing room: enter directly and connect with all existing active peers from DB
+    const existingActivePeers = await dbGetActiveParticipants(cleanId, userId);
+    if (existingActivePeers.length > 0) {
+      setRemoteParticipants(existingActivePeers);
+      remoteParticipantsRef.current = existingActivePeers;
+      existingActivePeers.forEach((peer) => {
+        lastSeenRef.current.set(peer.id, Date.now());
+        connectPeer(peer.id);
+      });
+    }
+
     enterRoom();
   };
 

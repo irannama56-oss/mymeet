@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
-import { SignalingMessage, cleanRoomCode } from './types';
+import { SignalingMessage, cleanRoomCode, Participant } from './types';
 
 const DEFAULT_SUPABASE_URL = 'https://mqnmkzitqtpzfnkkrlnf.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xbm1reml0cXRwemZua2tybG5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExMzU4MDUsImV4cCI6MjEwNjcxMTgwNX0.FULEA-fKDRlonaX9COzt_1fkf005pqZNQK-BT___E40';
@@ -231,6 +231,38 @@ export async function dbJoinOrCreateRoom(params: {
   } catch (err: any) {
     console.warn('dbJoinOrCreateRoom exception:', err);
     return { success: true, isHost: params.isCreate, isLocked: params.requireApproval || false };
+  }
+}
+
+export async function dbGetActiveParticipants(code: string, excludeUserId: string): Promise<Participant[]> {
+  const client = getSupabaseClient();
+  if (!client) return [];
+  const cleanCode = cleanRoomCode(code);
+  try {
+    const { data, error } = await client
+      .from('room_participants')
+      .select('*')
+      .eq('room_code', cleanCode)
+      .eq('is_active', true)
+      .neq('user_id', excludeUserId);
+
+    if (error || !data) return [];
+
+    return data.map((row: any) => ({
+      id: row.user_id,
+      name: row.user_name || 'Participant',
+      avatarColor: row.avatar_color || 'from-indigo-500 to-purple-600',
+      isHost: Boolean(row.is_host),
+      isAudioEnabled: true,
+      isVideoEnabled: true,
+      isScreenSharing: false,
+      isHandRaised: false,
+      isSpeaking: false,
+      joinedAt: row.joined_at ? new Date(row.joined_at).getTime() : Date.now(),
+    }));
+  } catch (e) {
+    console.warn('dbGetActiveParticipants error:', e);
+    return [];
   }
 }
 
