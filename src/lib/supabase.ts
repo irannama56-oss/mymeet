@@ -65,6 +65,234 @@ export function resetSupabaseClient() {
 
 export const isSupabaseConfigured = isSupabaseReady();
 
+export interface DbRoomRecord {
+  id: string;
+  code: string;
+  host_id: string;
+  host_name: string;
+  is_locked: boolean;
+  status: 'active' | 'closed';
+  created_at: string;
+  updated_at: string;
+  ended_at?: string | null;
+}
+
+export interface DbParticipantRecord {
+  id: string;
+  room_code: string;
+  user_id: string;
+  user_name: string;
+  avatar_color?: string;
+  is_host: boolean;
+  is_active: boolean;
+  joined_at: string;
+  last_seen_at: string;
+  left_at?: string | null;
+}
+
+/**
+ * DB Operations for persistent rooms & presence in Supabase
+ */
+export async function dbJoinOrCreateRoom(params: {
+  code: string;
+  userId: string;
+  userName: string;
+  avatarColor?: string;
+  isCreate: boolean;
+  requireApproval?: boolean;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  room?: DbRoomRecord;
+  isHost?: boolean;
+  isLocked?: boolean;
+}> {
+  const client = getSupabaseClient();
+  if (!client) {
+    // If Supabase is not configured, allow local/peer fallback
+    return { success: true, isHost: params.isCreate, isLocked: params.requireApproval || false };
+  }
+
+  const cleanCode = cleanRoomCode(params.code);
+
+  try {
+    // Try calling the optimized RPC function first
+    const { data, error } = await client.rpc('join_or_create_room', {
+      p_code: cleanCode,
+      p_user_id: params.userId,
+      p_user_name: params.userName,
+      p_avatar_color: params.avatarColor || null,
+      p_is_create: params.isCreate,
+      p_require_approval: Boolean(params.requireApproval),
+    });
+
+    if (!error && data) {
+      return {
+        success: Boolean(data.success),
+        error: data.error,
+        room: data.room,
+        isHost: Boolean(data.is_host),
+        isLocked: Boolean(data.is_locked),
+      };
+    }
+
+    // Fallback direct table query if RPC is not yet created in Supabase
+    if (params.isCreate) {
+      const { data: existing } = await client
+        .from('rooms')
+        .select('*')
+        .eq('code', cleanCode)
+        .maybeSingle();
+
+      if (existing) {
+        await client
+          .from('rooms')
+          .update({
+            host_id: params.userId,
+            host_name: params.userName,
+            is_locked: Boolean(params.requireApproval),
+            status: 'active',
+            updated_at: new Date().toISOString(),
+            ended_at: null,
+          })
+          .eq('code', cleanCode);
+      } else {
+        await client.from('rooms').insert({
+          code: cleanCode,
+          host_id: params.userId,
+          host_name: params.userName,
+          is_locked: Boolean(params.requireApproval),
+          status: 'active',
+        });
+      }
+
+      await client.from('room_participants').upsert(
+        {
+          room_code: cleanCode,
+          user_id: params.userId,
+          user_name: params.userName,
+          avatar_color: params.avatarColor,
+          is_host: true,
+          is_active: true,
+          last_seen_at: new Date().toISOString(),
+          left_at: null,
+        },
+        { onConflict: 'room_code,user_id' }
+      );
+
+      return { success: true, isHost: true, isLocked: Boolean(params.requireApproval) };
+    } else {
+      // Joining
+      const { data: room, error: roomErr } = await client
+        .from('rooms')
+        .select('*')
+        .eq('code', cleanCode)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (roomErr || !room) {
+        return { success: false, error: 'ROOM_NOT_FOUND_OR_CLOSED' };
+      }
+
+      await client.from('room_participants').upsert(
+        {
+          room_code: cleanCode,
+          user_id: params.userId,
+          user_name: params.userName,
+          avatar_color: params.avatarColor,
+          is_host: room.host_id === params.userId,
+          is_active: true,
+          last_seen_at: new Date().toISOString(),
+          left_at: null,
+        },
+        { onConflict: 'room_code,user_id' }
+      );
+
+      return {
+        success: true,
+        room,
+        isHost: room.host_id === params.userId,
+        isLocked: Boolean(room.is_locked),
+      };
+    }
+  } catch (err: any) {
+    console.warn('dbJoinOrCreateRoom exception:', err);
+    return { success: true, isHost: params.isCreate, isLocked: params.requireApproval || false };
+  }
+}
+
+export async function dbLeaveRoom(code: string, userId: string): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const cleanCode = cleanRoomCode(code);
+  try {
+    await client.rpc('leave_room', {
+      p_code: cleanCode,
+      p_user_id: userId,
+    });
+  } catch (e) {
+    try {
+      await client
+        .from('room_participants')
+        .update({ is_active: false, left_at: new Date().toISOString() })
+        .eq('room_code', cleanCode)
+        .eq('user_id', userId);
+    } catch {}
+  }
+}
+
+export async function dbHeartbeat(code: string, userId: string): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const cleanCode = cleanRoomCode(code);
+  try {
+    await client.rpc('heartbeat_room', {
+      p_code: cleanCode,
+      p_user_id: userId,
+    });
+  } catch (e) {
+    try {
+      await client
+        .from('room_participants')
+        .update({ last_seen_at: new Date().toISOString(), is_active: true })
+        .eq('room_code', cleanCode)
+        .eq('user_id', userId);
+    } catch {}
+  }
+}
+
+export async function dbCloseRoom(code: string): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const cleanCode = cleanRoomCode(code);
+  try {
+    await client
+      .from('rooms')
+      .update({ status: 'closed', ended_at: new Date().toISOString() })
+      .eq('code', cleanCode);
+    await client
+      .from('room_participants')
+      .update({ is_active: false, left_at: new Date().toISOString() })
+      .eq('room_code', cleanCode);
+  } catch (e) {
+    console.warn('dbCloseRoom error:', e);
+  }
+}
+
+export async function dbUpdateRoomLock(code: string, isLocked: boolean): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const cleanCode = cleanRoomCode(code);
+  try {
+    await client
+      .from('rooms')
+      .update({ is_locked: isLocked, updated_at: new Date().toISOString() })
+      .eq('code', cleanCode);
+  } catch (e) {
+    console.warn('dbUpdateRoomLock error:', e);
+  }
+}
+
 export interface InternalSignalingMessage extends SignalingMessage {
   msgId?: string;
   sentAt?: number;

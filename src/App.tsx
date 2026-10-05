@@ -9,7 +9,15 @@ import { GuestWaitingScreen, HostKnockBanner } from './components/KnockModal';
 import { SettingsModal } from './components/SettingsModal';
 import { MeetingHeader } from './components/MeetingHeader';
 import { WebRTCManager } from './lib/webrtc';
-import { SignalingService, RealtimeStatus } from './lib/supabase';
+import {
+  SignalingService,
+  RealtimeStatus,
+  dbJoinOrCreateRoom,
+  dbLeaveRoom,
+  dbHeartbeat,
+  dbUpdateRoomLock,
+  dbCloseRoom,
+} from './lib/supabase';
 import {
   Participant,
   ChatMessage,
@@ -556,14 +564,27 @@ export const App: React.FC = () => {
     return () => window.clearInterval(interval);
   }, [inMeeting, realtimeStatus]);
 
-  // Closing the tab never triggered the normal leave path, so the other participants
-  // kept a ghost tile until the timeout above kicked in.
+  // Keep DB and presence heartbeat alive while in meeting
+  useEffect(() => {
+    if (!inMeeting || !roomId) return;
+    void dbHeartbeat(roomId, userId);
+
+    const interval = window.setInterval(() => {
+      void dbHeartbeat(roomId, userId);
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [inMeeting, roomId, userId]);
+
+  // Closing the tab notifies peers and updates database
   useEffect(() => {
     if (!inMeeting) return;
 
     const announceLeave = () => {
       if (signalingRef.current) {
         signalingRef.current.send({ type: 'peer-left' });
+      }
+      if (roomIdRef.current) {
+        void dbLeaveRoom(roomIdRef.current, userId);
       }
     };
 
@@ -573,7 +594,7 @@ export const App: React.FC = () => {
       window.removeEventListener('pagehide', announceLeave);
       window.removeEventListener('beforeunload', announceLeave);
     };
-  }, [inMeeting]);
+  }, [inMeeting, userId]);
 
   // Trigger floating emoji animation and confetti
   const triggerFloatingEmoji = (emoji: string) => {
@@ -625,6 +646,24 @@ export const App: React.FC = () => {
     };
     setLocalParticipant(updatedLocal);
     localParticipantRef.current = updatedLocal;
+
+    // Synchronize / Validate with Supabase Database
+    const dbResult = await dbJoinOrCreateRoom({
+      code: cleanId,
+      userId,
+      userName: data.name,
+      avatarColor: updatedLocal.avatarColor,
+      isCreate: data.isHost,
+      requireApproval: data.requireHostApproval,
+    });
+
+    if (!data.isHost) {
+      if (!dbResult.success && dbResult.error === 'ROOM_NOT_FOUND_OR_CLOSED') {
+        setJoinPhase('not-found');
+        joinPhaseRef.current = 'not-found';
+        return;
+      }
+    }
 
     // Setup Signaling Channel
     const signaling = new SignalingService(cleanId, userId);
@@ -681,49 +720,50 @@ export const App: React.FC = () => {
       });
     });
 
-    // The host explicitly asked to create this meeting: go straight in.
-    if (data.isHost) {
+    // If host created the meeting or DB confirms host:
+    if (data.isHost || dbResult.isHost) {
       enterRoom();
       return;
     }
 
-    // Guest: ask the room whether a host already owns this code before entering, so a
-    // wrong/expired code surfaces as "meeting not found" instead of an empty new room.
-    clearProbeTimers();
-    setJoinPhase('probing');
-    joinPhaseRef.current = 'probing';
-
-    const probe = () =>
+    // If room is locked according to DB:
+    if (dbResult.isLocked) {
+      setIsRoomLocked(true);
+      isRoomLockedRef.current = true;
+      setWaitingStatus('waiting');
       signaling.send({
-        type: 'room-probe',
+        type: 'join-request',
         senderName: data.name,
         payload: { avatarColor: localParticipantRef.current.avatarColor },
       });
+      return;
+    }
 
-    probe();
-    // Retry a couple of times: the first broadcast may be queued while the realtime
-    // channel finishes subscribing.
-    probeTimersRef.current.push(window.setTimeout(probe, 700));
-    probeTimersRef.current.push(window.setTimeout(probe, 1500));
-    probeTimersRef.current.push(
-      window.setTimeout(() => {
-        probeTimersRef.current = [];
-        if (!inMeetingRef.current && joinPhaseRef.current === 'probing') {
-          setJoinPhase('not-found');
-          joinPhaseRef.current = 'not-found';
-        }
-      }, 2600)
-    );
+    // Unlocked existing room: enter directly!
+    enterRoom();
   };
 
   // The room code does not exist yet — the user chose to open it as the host.
-  const handleStartMissingRoom = () => {
+  const handleStartMissingRoom = async () => {
     sounds.playClick();
     setIsHost(true);
     // Update the ref synchronously so the very first broadcast already says "host".
     const next: Participant = { ...localParticipantRef.current, isHost: true, joinedAt: Date.now() };
     localParticipantRef.current = next;
     setLocalParticipant(next);
+
+    const targetCode = pendingRoomRef.current || roomIdRef.current;
+    if (targetCode) {
+      await dbJoinOrCreateRoom({
+        code: targetCode,
+        userId,
+        userName: next.name,
+        avatarColor: next.avatarColor,
+        isCreate: true,
+        requireApproval: false,
+      });
+    }
+
     enterRoom();
   };
 
@@ -899,6 +939,9 @@ export const App: React.FC = () => {
     const nextState = !isRoomLockedRef.current;
     isRoomLockedRef.current = nextState;
     setIsRoomLocked(nextState);
+    if (roomIdRef.current) {
+      void dbUpdateRoomLock(roomIdRef.current, nextState);
+    }
     if (signalingRef.current) {
       signalingRef.current.send({
         type: 'host-lock-toggle',
@@ -925,6 +968,11 @@ export const App: React.FC = () => {
   // Leave Meeting
   const handleLeaveMeeting = () => {
     clearProbeTimers();
+
+    const targetCode = roomIdRef.current || pendingRoomRef.current;
+    if (targetCode) {
+      void dbLeaveRoom(targetCode, userId);
+    }
 
     // Reset URL back to root
     if (typeof window !== 'undefined' && window.location.pathname !== '/') {
