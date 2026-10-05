@@ -66,6 +66,11 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
       (p) => p.id !== spotlightParticipant.id
     );
 
+    // The spotlight tile can be the local user (screen sharing, or pinned). Passing the
+    // real "is this me" flag is what stops the tile from rendering an unmuted <audio>
+    // element pointed at our own microphone / screen audio — i.e. hearing yourself.
+    const isSpotlightLocal = spotlightParticipant.id === localParticipant.id;
+
     return (
       <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-2 sm:p-4 overflow-hidden">
         {/* Main Spotlight Area (Large Viewport) */}
@@ -73,7 +78,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
           <VideoTile
             participant={spotlightParticipant}
             stream={spotlightStream}
-            isLocal={isSharerLocal && !isScreenSharingActive}
+            isLocal={isSpotlightLocal}
             isPinned={true}
             onTogglePin={onTogglePin}
             isScreenShareTile={isScreenSharingActive}
@@ -144,15 +149,15 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   };
 
   return (
-    <div className="w-full h-full flex items-center justify-center p-2 sm:p-4">
+    <div className="w-full h-full flex items-center justify-center p-2 sm:p-4 overflow-hidden">
       <div
-        className={`grid gap-3 sm:gap-4 w-full h-full items-center justify-center ${getGridClasses()}`}
+        className={`grid gap-3 sm:gap-4 w-full h-full items-stretch justify-center auto-rows-fr ${getGridClasses()}`}
       >
         {allParticipants.map((p) => {
           const stream =
             p.id === localParticipant.id ? localStream : remoteStreams.get(p.id);
           return (
-            <div key={p.id} className="w-full h-full min-h-[180px] sm:min-h-[220px]">
+            <div key={p.id} className="w-full h-full min-h-0 min-w-0">
               <VideoTile
                 participant={p}
                 stream={stream}

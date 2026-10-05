@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
 import { cleanRoomCode } from '../lib/types';
+import { ConnectionBanner } from './ConnectionBanner';
 
 interface LobbyProps {
   onJoin: (data: {
@@ -60,14 +61,25 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
     if (initialRoomId) {
       setRoomId(initialRoomId);
       setIsCreatingNew(false);
-    } else if (isCreatingNew && !roomId) {
+    }
+  }, [initialRoomId]);
+
+  // A code is only auto-generated while the "New Meeting" tab is active and empty.
+  // (Previously the effect also force-reset isCreatingNew, so "New Meeting" was
+  // unreachable whenever the page was opened from a room link.)
+  useEffect(() => {
+    if (isCreatingNew && !roomId) {
       setRoomId(generateRoomCode());
     }
-  }, [initialRoomId, isCreatingNew]);
+  }, [isCreatingNew, roomId]);
 
   // Setup preview stream
   useEffect(() => {
     let active = true;
+    // Track the stream in the effect scope: reading the `previewStream` state inside the
+    // cleanup could miss the stream created by this very run and leak the camera.
+    let currentStream: MediaStream | null = null;
+    let currentAudioCtx: AudioContext | null = null;
 
     async function initPreview() {
       try {
@@ -81,6 +93,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
           return;
         }
 
+        currentStream = stream;
         setPreviewStream(stream);
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -91,6 +104,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
           const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
           const audioCtx = new AudioCtx();
           audioContextRef.current = audioCtx;
+          currentAudioCtx = audioCtx;
           const source = audioCtx.createMediaStreamSource(stream);
           const analyser = audioCtx.createAnalyser();
           analyser.fftSize = 256;
@@ -120,10 +134,16 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
 
     return () => {
       active = false;
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
-      if (previewStream) {
-        previewStream.getTracks().forEach((t) => t.stop());
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+      if (currentAudioCtx) {
+        currentAudioCtx.close().catch(() => {});
+        audioContextRef.current = null;
+      }
+      if (currentStream) {
+        currentStream.getTracks().forEach((t) => t.stop());
       }
     };
   }, [isVideoEnabled, isAudioEnabled]);
@@ -142,12 +162,15 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    sounds.playJoinChime();
+    // A short click only: the join chime is played once by the meeting itself, so playing
+    // it here as well produced a doubled sound for anyone creating a room.
+    sounds.playClick();
     localStorage.setItem('aura_meet_username', name.trim());
 
     // Clean up preview stream tracks before joining
     if (previewStream) {
       previewStream.getTracks().forEach((t) => t.stop());
+      setPreviewStream(null);
     }
 
     onJoin({
@@ -167,7 +190,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   };
 
   return (
-    <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 md:p-8 bg-gradient-to-b from-dark-950 via-dark-900 to-dark-950 overflow-hidden">
+    <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 md:p-8 bg-gradient-to-b from-dark-950 via-dark-900 to-dark-950 overflow-x-hidden">
       {/* Background ambient lighting effects */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-600/15 rounded-full blur-[120px] pointer-events-none -z-10" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/15 rounded-full blur-[120px] pointer-events-none -z-10" />
@@ -286,9 +309,9 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                 onClick={() => {
                   sounds.playClick();
                   setIsCreatingNew(false);
-                  if (!initialRoomId) {
-                    setRoomId('');
-                  }
+                  // Switching to join: keep the code from the shared link, otherwise
+                  // clear the auto-generated one so the user can type the real code.
+                  setRoomId(initialRoomId || '');
                 }}
                 className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
                   !isCreatingNew
@@ -386,12 +409,15 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
               </button>
             </form>
 
-            <div className="mt-5 pt-4 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-              <span className="flex items-center gap-1">
-                <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                P2P Encrypted Mesh
-              </span>
-              <span>Max 4-6 participants</span>
+            <div className="mt-5 pt-4 border-t border-slate-800/80 space-y-3">
+              <ConnectionBanner />
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                  P2P Encrypted Mesh
+                </span>
+                <span>Max 4-6 participants</span>
+              </div>
             </div>
           </div>
         </div>

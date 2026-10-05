@@ -84,7 +84,7 @@ export const HostKnockBanner: React.FC<HostKnockBannerProps> = ({
   const currentKnock = knockRequests[0];
 
   return (
-    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4 animate-in slide-in-from-top duration-300">
+    <div className="fixed top-32 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4 animate-in slide-in-from-top duration-300">
       <div className="p-4 rounded-2xl glass-panel border border-amber-500/40 shadow-2xl bg-dark-900/95 flex items-center justify-between gap-3">
         <div className="flex items-center space-x-3 min-w-0">
           <div

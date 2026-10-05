@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   X, Users, Crown, Mic, MicOff, Video, VideoOff, 
   Hand, UserX, Lock, Unlock, Copy, Check, ShieldCheck, UserPlus, CheckCircle2, XCircle
@@ -36,7 +36,21 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
   onKickParticipant,
 }) => {
   const [copiedLink, setCopiedLink] = useState(false);
+  // Kicking is destructive and irreversible for that user — require a second click.
+  const [confirmKickId, setConfirmKickId] = useState<string | null>(null);
   const allParticipants = [localParticipant, ...remoteParticipants];
+  const participantIds = allParticipants.map((p) => p.id).join(',');
+
+  // Forget a pending confirmation if the drawer closes or that person is already gone.
+  useEffect(() => {
+    if (!isOpen) {
+      setConfirmKickId(null);
+      return;
+    }
+    if (confirmKickId && !participantIds.split(',').includes(confirmKickId)) {
+      setConfirmKickId(null);
+    }
+  }, [isOpen, participantIds, confirmKickId]);
 
   if (!isOpen) return null;
 
@@ -226,13 +240,35 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
 
                   {/* Host Kick Option */}
                   {isHost && !isMe && (
-                    <button
-                      onClick={() => onKickParticipant(p.id)}
-                      className="p-1 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors ml-1"
-                      title="Remove from meeting"
-                    >
-                      <UserX className="w-3.5 h-3.5" />
-                    </button>
+                    confirmKickId === p.id ? (
+                      <div className="flex items-center gap-1 ml-1">
+                        <button
+                          onClick={() => {
+                            setConfirmKickId(null);
+                            onKickParticipant(p.id);
+                          }}
+                          className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-semibold transition-colors"
+                          title="Confirm removal"
+                        >
+                          Remove
+                        </button>
+                        <button
+                          onClick={() => setConfirmKickId(null)}
+                          className="px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold border border-slate-700 transition-colors"
+                          title="Cancel"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmKickId(p.id)}
+                        className="p-1 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors ml-1"
+                        title="Remove from meeting"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                      </button>
+                    )
                   )}
                 </div>
               </div>

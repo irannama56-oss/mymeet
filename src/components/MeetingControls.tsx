@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   Mic, MicOff, Video, VideoOff, ScreenShare, ScreenShareOff, 
   Hand, MessageSquare, Users, PhoneOff, Smile, Settings, 
@@ -56,6 +56,27 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
   onToggleRoomLock,
 }) => {
   const [showReactions, setShowReactions] = useState(false);
+  const reactionsRef = useRef<HTMLDivElement>(null);
+
+  // The emoji picker used to stay open until the toggle was clicked again, covering the
+  // controls dock. Close it on an outside click or Escape.
+  useEffect(() => {
+    if (!showReactions) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (reactionsRef.current && !reactionsRef.current.contains(e.target as Node)) {
+        setShowReactions(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowReactions(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showReactions]);
 
   const handleReactionClick = (emoji: string) => {
     sounds.playClick();
@@ -133,7 +154,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
       </button>
 
       {/* 5. Reactions Picker */}
-      <div className="relative">
+      <div className="relative" ref={reactionsRef}>
         <button
           onClick={() => setShowReactions(!showReactions)}
           className={`p-3.5 rounded-xl font-medium transition-all ${

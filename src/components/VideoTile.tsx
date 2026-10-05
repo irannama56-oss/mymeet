@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, VideoOff, Crown, Hand, Maximize2, Minimize2, Pin, PinOff, Monitor } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { MicOff, VideoOff, Crown, Hand, Maximize2, Minimize2, Pin, PinOff, Monitor } from 'lucide-react';
 import { Participant } from '../lib/types';
 
 interface VideoTileProps {
@@ -19,38 +19,10 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   onTogglePin,
   isScreenShareTile = false,
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Attach stream to video element
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  // Attach stream to dedicated audio element for remote participants
-  useEffect(() => {
-    if (!isLocal && audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
-      audioRef.current.play().catch((err) => {
-        console.warn('Audio auto-play prevented (user gesture needed):', err);
-      });
-    }
-  }, [stream, isLocal]);
-
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch((err) => console.error(err));
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch((err) => console.error(err));
-      setIsFullscreen(false);
-    }
-  };
 
   // Determine whether video should be rendered
   const hasLiveVideoTrack = Boolean(
@@ -63,6 +35,87 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     hasLiveVideoTrack &&
     (isScreenShareTile || participant.isScreenSharing || participant.isVideoEnabled);
 
+  // A callback ref instead of a plain useEffect: the <video> element is unmounted while
+  // the avatar placeholder is shown, so an effect keyed on [stream] never fired again when
+  // the video came back — the tile stayed black until the stream object itself changed.
+  const attachVideo = useCallback(
+    (el: HTMLVideoElement | null) => {
+      videoRef.current = el;
+      if (el && stream) {
+        el.srcObject = stream;
+        el.play().catch(() => {
+          /* muted local playback, no gesture needed */
+        });
+      }
+    },
+    [stream]
+  );
+
+  const attachAudio = useCallback(
+    (el: HTMLAudioElement | null) => {
+      audioRef.current = el;
+      if (el && stream) {
+        el.srcObject = stream;
+      }
+    },
+    [stream]
+  );
+
+  // Remote audio: keep retrying playback until the browser lets us (autoplay policies can
+  // silently reject the first attempt and leave the call permanently mute).
+  useEffect(() => {
+    if (isLocal || !stream) return;
+    const el = audioRef.current;
+    if (!el) return;
+
+    let cancelled = false;
+
+    const play = () => {
+      if (cancelled || !el) return;
+      const p = el.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {
+          if (cancelled) return;
+          const resume = () => {
+            el.play().catch(() => {});
+          };
+          document.addEventListener('click', resume, { once: true });
+          document.addEventListener('keydown', resume, { once: true });
+        });
+      }
+    };
+
+    play();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stream, isLocal, hasActiveVideo]);
+
+  // Keep the fullscreen icon in sync with the real browser state (Esc key included)
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current
+        .requestFullscreen()
+        .then(() => setIsFullscreen(true))
+        .catch((err) => console.error(err));
+    } else {
+      document
+        .exitFullscreen()
+        .then(() => setIsFullscreen(false))
+        .catch((err) => console.error(err));
+    }
+  };
+
   return (
     <div
       ref={containerRef}
@@ -73,17 +126,19 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       }`}
     >
       {/* Remote Audio Element (Always present for remote peers to guarantee continuous audio) */}
-      {!isLocal && <audio ref={audioRef} autoPlay playsInline />}
+      {!isLocal && <audio ref={attachAudio} autoPlay playsInline />}
 
       {/* Video Element */}
       {hasActiveVideo ? (
         <video
-          ref={videoRef}
+          ref={attachVideo}
           autoPlay
           playsInline
           muted={isLocal} // Mute local preview to prevent echo feedback
           className={`w-full h-full object-contain bg-black/40 transition-transform duration-300 ${
-            isLocal && !isScreenShareTile && !participant.isScreenSharing ? '-scale-x-100 object-cover' : 'object-contain'
+            isLocal && !isScreenShareTile && !participant.isScreenSharing
+              ? '-scale-x-100 object-cover'
+              : 'object-contain'
           }`}
         />
       ) : (

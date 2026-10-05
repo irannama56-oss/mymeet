@@ -56,6 +56,7 @@ export type SignalingMessageType =
   | 'ice-candidate'
   | 'peer-left'
   | 'chat-message'
+  | 'chat-history'
   | 'reaction'
   | 'state-update'
   | 'hand-raise'
@@ -69,6 +70,16 @@ export interface SignalingMessage {
   senderName?: string;
   targetId?: string; // If targeting a specific peer
   payload?: any;
+}
+
+/**
+ * Room codes are generated as `abc-defg-hij`. A URL path segment is only treated as a
+ * room slug when it actually looks like a code (at least two dash separated groups).
+ * Without this guard, paths such as `/app` or `/preview` were silently treated as rooms.
+ */
+export function isRoomCodeLike(input: string): boolean {
+  const code = cleanRoomCode(input);
+  return /^[a-z0-9]{2,}(-[a-z0-9]{2,})+$/.test(code);
 }
 
 export function cleanRoomCode(input: string): string {

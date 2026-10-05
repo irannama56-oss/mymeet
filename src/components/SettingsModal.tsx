@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, Mic, Video, Database, CheckCircle2, AlertTriangle, Key, Globe, Shield } from 'lucide-react';
-import { getSupabaseCredentials, isSupabaseReady } from '../lib/supabase';
+import { getSupabaseCredentials, isSupabaseReady, resetSupabaseClient } from '../lib/supabase';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -50,6 +50,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleSave = () => {
+    const previousUrl = localStorage.getItem('aura_supabase_url') || '';
+    const previousKey = localStorage.getItem('aura_supabase_key') || '';
+
     // Save Supabase credentials to localStorage if modified
     if (supabaseUrl.trim()) {
       localStorage.setItem('aura_supabase_url', supabaseUrl.trim());
@@ -61,6 +64,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       localStorage.setItem('aura_supabase_key', supabaseKey.trim());
     } else {
       localStorage.removeItem('aura_supabase_key');
+    }
+
+    // The Supabase client is a module-level singleton — without dropping it, new
+    // credentials had no effect at all until a full page reload.
+    if (previousUrl !== supabaseUrl.trim() || previousKey !== supabaseKey.trim()) {
+      resetSupabaseClient();
     }
 
     if (onDeviceChange) {

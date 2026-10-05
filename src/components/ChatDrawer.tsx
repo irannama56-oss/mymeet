@@ -24,6 +24,9 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   useEffect(() => {
     if (isOpen) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      // Do not keep a half-typed message around for the next time the drawer opens.
+      setInputText('');
     }
   }, [messages, isOpen]);
 
@@ -94,8 +97,8 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
                 <div
                   className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed break-words shadow-sm ${
                     isMe
-                      ? 'bg-indigo-600 text-white rounded-tr-xs'
-                      : 'bg-slate-800/90 text-slate-100 border border-slate-700/60 rounded-tl-xs'
+                      ? 'bg-indigo-600 text-white rounded-tr-sm'
+                      : 'bg-slate-800/90 text-slate-100 border border-slate-700/60 rounded-tl-sm'
                   }`}
                 >
                   {msg.text}
