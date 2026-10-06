@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Lock, Unlock, Copy, Check, Radio, Users, Clock } from 'lucide-react';
+import { Shield, Lock, Unlock, Copy, Check, Radio, Users, Clock, Crown } from 'lucide-react';
 import { sounds } from '../lib/sound';
 
 interface MeetingHeaderProps {
   roomId: string;
   isHost: boolean;
+  isSuperAdmin?: boolean;
   isRoomLocked: boolean;
   participantsCount: number;
 }
@@ -12,6 +13,7 @@ interface MeetingHeaderProps {
 export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
   roomId,
   isHost,
+  isSuperAdmin,
   isRoomLocked,
   participantsCount,
 }) => {
@@ -58,6 +60,13 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
           {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
           <span>{copied ? 'Copied' : 'Invite'}</span>
         </button>
+
+        {isSuperAdmin && (
+          <div className="flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/40 font-mono shadow-sm">
+            <Crown className="w-3 h-3 fill-current text-amber-400" />
+            <span>SUPER ADMIN</span>
+          </div>
+        )}
 
         {isRoomLocked && (
           <div className="flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[10px] font-semibold border border-amber-500/30">

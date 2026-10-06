@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Video, VideoOff, Mic, MicOff, Lock, Unlock, 
   ArrowRight, Shield, Radio, Copy, Check, Settings,
-  Sparkles, RefreshCw, Volume2
+  Sparkles, RefreshCw, Volume2, KeyRound
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
 import { cleanRoomCode } from '../lib/types';
@@ -19,9 +19,10 @@ interface LobbyProps {
     requireHostApproval: boolean;
   }) => void;
   initialRoomId?: string;
+  onOpenAdmin?: () => void;
 }
 
-export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
+export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpenAdmin }) => {
   const [name, setName] = useState(() => localStorage.getItem('aura_meet_username') || '');
   const [roomId, setRoomId] = useState(initialRoomId);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
@@ -213,7 +214,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   };
 
   return (
-    <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 md:p-10 bg-gradient-to-br from-dark-950 via-dark-900 to-dark-950 overflow-x-hidden">
+    <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 md:p-10 bg-gradient-to-br from-dark-950 via-dark-900 to-dark-950 overflow-x-hidden select-none">
       {/* Background ambient lighting effects */}
       <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[140px] pointer-events-none -z-10 animate-pulse-subtle" />
       <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[140px] pointer-events-none -z-10 animate-pulse-subtle" />
@@ -236,14 +237,30 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
           </div>
         </div>
 
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-white hover:border-slate-600 transition-all flex items-center gap-2 text-xs font-medium"
-          title="Settings"
-        >
-          <Settings className="w-4 h-4 text-indigo-400" />
-          <span className="hidden sm:inline">Settings</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          {onOpenAdmin && (
+            <button
+              onClick={() => {
+                sounds.playClick();
+                onOpenAdmin();
+              }}
+              className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+              title="Super Admin Panel"
+            >
+              <KeyRound className="w-4 h-4 text-amber-400" />
+              <span className="hidden sm:inline">Admin Panel</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-white hover:border-slate-600 transition-all flex items-center gap-2 text-xs font-medium cursor-pointer"
+            title="Settings"
+          >
+            <Settings className="w-4 h-4 text-indigo-400" />
+            <span className="hidden sm:inline">Settings</span>
+          </button>
+        </div>
       </header>
 
       {/* Main Container */}
@@ -369,7 +386,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                   setIsCreatingNew(true);
                   if (!roomId || !roomId.includes('-')) setRoomId(generateRoomCode());
                 }}
-                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${
+                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all cursor-pointer ${
                   isCreatingNew
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                     : 'text-slate-400 hover:text-white'
@@ -384,7 +401,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                   setIsCreatingNew(false);
                   setRoomId(initialRoomId || '');
                 }}
-                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${
+                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all cursor-pointer ${
                   !isCreatingNew
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                     : 'text-slate-400 hover:text-white'
@@ -420,7 +437,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                     <button
                       type="button"
                       onClick={handleRegenerateCode}
-                      className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium"
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium cursor-pointer"
                       title="Generate new code"
                     >
                       <RefreshCw className="w-3 h-3" />
@@ -444,7 +461,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                     <button
                       type="button"
                       onClick={handleCopyCode}
-                      className="absolute right-2.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 border border-slate-600/50 shadow-sm transition-all"
+                      className="absolute right-2.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 border border-slate-600/50 shadow-sm transition-all cursor-pointer"
                       title="Copy code"
                     >
                       {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}

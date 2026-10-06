@@ -252,6 +252,39 @@ class SoundManager {
       // Guarded
     }
   }
+
+  /**
+   * Subtle error tone for rejected or invalid actions
+   */
+  public playErrorTone() {
+    if (this.isMuted) return;
+    const ctx = this.initCtx();
+    if (!ctx) return;
+
+    try {
+      const now = ctx.currentTime;
+      const freqs = [320, 240];
+      freqs.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.1);
+
+        gain.gain.setValueAtTime(0, now + idx * 0.1);
+        gain.gain.linearRampToValueAtTime(0.04, now + idx * 0.1 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.1 + 0.2);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now + idx * 0.1);
+        osc.stop(now + idx * 0.1 + 0.22);
+      });
+    } catch {
+      // Guarded
+    }
+  }
 }
 
 export const sounds = new SoundManager();

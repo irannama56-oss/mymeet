@@ -8,6 +8,8 @@ import { ParticipantsDrawer } from './components/ParticipantsDrawer';
 import { GuestWaitingScreen, HostKnockBanner } from './components/KnockModal';
 import { SettingsModal } from './components/SettingsModal';
 import { MeetingHeader } from './components/MeetingHeader';
+import { AdminLogin } from './components/admin/AdminLogin';
+import { AdminDashboard } from './components/admin/AdminDashboard';
 import { WebRTCManager } from './lib/webrtc';
 import {
   SignalingService,
@@ -24,9 +26,11 @@ import {
   ChatMessage,
   KnockRequest,
   SignalingMessage,
+  AdminUser,
   cleanRoomCode,
   isRoomCodeLike,
 } from './lib/types';
+import { getStoredAdminSession, adminLogout } from './lib/adminAuth';
 import { sounds } from './lib/sound';
 import { RoomNotFoundModal } from './components/RoomNotFoundModal';
 import { ConnectionBanner } from './components/ConnectionBanner';
@@ -43,10 +47,22 @@ const AVATAR_COLORS = [
   'from-violet-500 to-fuchsia-600',
 ];
 
+const checkIsAdminPath = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname.toLowerCase();
+  const search = window.location.search.toLowerCase();
+  return (
+    path.startsWith('/admin') ||
+    path.startsWith('/login') ||
+    search.includes('admin=true') ||
+    search.includes('login=true')
+  );
+};
+
 const getRoomSlugFromUrl = (): string => {
   if (typeof window === 'undefined') return '';
   const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
-  if (pathname && !pathname.includes('.') && isRoomCodeLike(pathname)) {
+  if (pathname && !pathname.includes('.') && isRoomCodeLike(pathname) && !pathname.startsWith('admin')) {
     return cleanRoomCode(pathname);
   }
   const params = new URLSearchParams(window.location.search);
@@ -58,6 +74,15 @@ const getRoomSlugFromUrl = (): string => {
 };
 
 export const App: React.FC = () => {
+  // Navigation & View Routing State
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => getStoredAdminSession());
+  const [currentView, setCurrentView] = useState<'lobby' | 'admin-login' | 'admin-dashboard'>(() => {
+    if (checkIsAdminPath()) {
+      return getStoredAdminSession() ? 'admin-dashboard' : 'admin-login';
+    }
+    return 'lobby';
+  });
+
   // Session & UI States
   const [inMeeting, setInMeeting] = useState(false);
   const [waitingStatus, setWaitingStatus] = useState<'none' | 'waiting' | 'declined'>('none');
@@ -107,7 +132,7 @@ export const App: React.FC = () => {
   const preSpaceMutedRef = useRef(false);
 
   // Speaking debounce ref
-  const speakingTimeoutRef = useRef<number | null>(null);
+  const speakingTimeoutRef = useRef<any>(null);
 
   // Refs for access in callbacks
   const webrtcRef = useRef<WebRTCManager | null>(null);
@@ -121,7 +146,7 @@ export const App: React.FC = () => {
   const roomIdRef = useRef('');
   const signalingHandlerRef = useRef<(msg: SignalingMessage) => void>(() => {});
   const joinPhaseRef = useRef<'idle' | 'probing' | 'not-found'>('idle');
-  const probeTimersRef = useRef<number[]>([]);
+  const probeTimersRef = useRef<any[]>([]);
   const pendingRoomRef = useRef<string>('');
   const remoteParticipantsRef = useRef<Participant[]>([]);
   remoteParticipantsRef.current = remoteParticipants;
@@ -132,15 +157,25 @@ export const App: React.FC = () => {
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   chatMessagesRef.current = chatMessages;
   const mediaBusyRef = useRef(false);
-  const emojiTimersRef = useRef<number[]>([]);
+  const emojiTimersRef = useRef<any[]>([]);
 
   // Initial room detection from URL pathname
   const [initialRoomParam, setInitialRoomParam] = useState(getRoomSlugFromUrl);
 
+  // Browser history popstate handler
   useEffect(() => {
     const handlePopState = () => {
-      const slug = getRoomSlugFromUrl();
-      setInitialRoomParam(slug);
+      if (checkIsAdminPath()) {
+        const stored = getStoredAdminSession();
+        setAdminUser(stored);
+        setCurrentView(stored ? 'admin-dashboard' : 'admin-login');
+      } else {
+        const slug = getRoomSlugFromUrl();
+        setInitialRoomParam(slug);
+        if (!inMeetingRef.current) {
+          setCurrentView('lobby');
+        }
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -172,7 +207,7 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Connect WebRTC peer connection deterministically: Larger userId initiates the offer
+  // Connect WebRTC peer connection deterministically: Larger userId initiates offer
   const connectPeer = useCallback((peerId: string) => {
     const webrtc = webrtcRef.current;
     if (!webrtc) return;
@@ -183,11 +218,11 @@ export const App: React.FC = () => {
   }, [userId]);
 
   const clearProbeTimers = useCallback(() => {
-    probeTimersRef.current.forEach((t) => window.clearTimeout(t));
+    probeTimersRef.current.forEach((t) => clearTimeout(t));
     probeTimersRef.current = [];
   }, []);
 
-  // Acquire camera/mic in background
+  // Acquire camera/mic
   const startLocalMedia = useCallback(async () => {
     const webrtc = webrtcRef.current;
     if (!webrtc || mediaBusyRef.current) return;
@@ -205,7 +240,7 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // The single place that enters the room
+  // Enter room helper
   const enterRoom = useCallback(() => {
     clearProbeTimers();
     setJoinPhase('idle');
@@ -231,10 +266,60 @@ export const App: React.FC = () => {
       });
     }
 
-    window.setTimeout(() => {
-      void startLocalMedia();
-    }, 120);
+    void startLocalMedia();
   }, [clearProbeTimers, startLocalMedia]);
+
+  // Leave Meeting Helper
+  const handleLeaveMeeting = useCallback(() => {
+    clearProbeTimers();
+
+    const targetCode = roomIdRef.current || pendingRoomRef.current;
+    if (targetCode) {
+      void dbLeaveRoom(targetCode, userId);
+    }
+
+    if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/');
+    }
+
+    if (signalingRef.current) {
+      try {
+        signalingRef.current.send({
+          type: 'peer-left',
+        });
+        signalingRef.current.disconnect();
+      } catch {}
+      signalingRef.current = null;
+    }
+
+    if (webrtcRef.current) {
+      webrtcRef.current.cleanup();
+      webrtcRef.current = null;
+    }
+
+    lastSeenRef.current.clear();
+    screenShareBusyRef.current = false;
+    setLocalStream(null);
+    setScreenStream(null);
+    setRemoteStreams(new Map());
+    setRemoteParticipants([]);
+    setChatMessages([]);
+    setKnockRequests([]);
+    setInMeeting(false);
+    inMeetingRef.current = false;
+    setWaitingStatus('none');
+    setJoinPhase('idle');
+    joinPhaseRef.current = 'idle';
+    setPinnedParticipantId(null);
+    setScreenSharingParticipantId(null);
+    setUnreadChatCount(0);
+    setIsChatOpen(false);
+    setIsParticipantsOpen(false);
+    setIsSettingsOpen(false);
+    setIsHost(false);
+    setIsRoomLocked(false);
+    isRoomLockedRef.current = false;
+  }, [clearProbeTimers, userId]);
 
   // Handle incoming signaling messages
   const handleSignalingMessage = useCallback(async (msg: SignalingMessage) => {
@@ -243,22 +328,23 @@ export const App: React.FC = () => {
     if (!webrtc || !signaling) return;
 
     switch (msg.type) {
-      // 0. Someone asks whether a host already owns this room code
+      // 0. Guest sends probe to check if host/room exists
       case 'room-probe':
-        if (localParticipantRef.current.isHost && inMeetingRef.current) {
+        if (inMeetingRef.current) {
           signaling.send({
             type: 'room-state',
             targetId: msg.senderId,
             payload: {
-              hostId: userId,
+              hostId: localParticipantRef.current.isHost ? userId : undefined,
               isLocked: isRoomLockedRef.current,
               hostJoinedAt: localParticipantRef.current.joinedAt,
+              activePeers: remoteParticipantsRef.current.map((p) => p.id),
             },
           });
         }
         break;
 
-      // 0.5 A host answered our probe
+      // 0.5 Response to probe
       case 'room-state':
         if (!inMeetingRef.current && joinPhaseRef.current === 'probing') {
           clearProbeTimers();
@@ -341,17 +427,40 @@ export const App: React.FC = () => {
 
       // 7. Remote Participant State Update
       case 'state-update':
+        if (!inMeetingRef.current && joinPhaseRef.current === 'probing') {
+          // If probing and active state received, room exists!
+          clearProbeTimers();
+          if (msg.payload?.isRoomLocked) {
+            setIsRoomLocked(true);
+            setWaitingStatus('waiting');
+            signaling.send({
+              type: 'join-request',
+              senderName: localParticipantRef.current.name,
+              payload: { avatarColor: localParticipantRef.current.avatarColor },
+            });
+          } else {
+            enterRoom();
+          }
+        }
+
         if (!inMeetingRef.current) break;
+
         if (msg.payload?.participant) {
           const remoteP: Participant = msg.payload.participant;
           const isNewPeer = !remoteParticipantsRef.current.some((p) => p.id === remoteP.id);
           lastSeenRef.current.set(remoteP.id, Date.now());
 
-          // Prevent duplicate host collision: Seniority rule
-          if (remoteP.isHost && localParticipantRef.current.isHost && remoteP.id !== userId) {
+          // Prevent duplicate host collision: Super Admin always retains host; else seniority rule
+          if (
+            remoteP.isHost &&
+            localParticipantRef.current.isHost &&
+            remoteP.id !== userId &&
+            !localParticipantRef.current.isSuperAdmin
+          ) {
             const remoteJoinedAt = remoteP.joinedAt || 0;
             const localJoinedAt = localParticipantRef.current.joinedAt || 0;
             const shouldYield =
+              remoteP.isSuperAdmin ||
               remoteJoinedAt < localJoinedAt ||
               (remoteJoinedAt === localJoinedAt && remoteP.id < userId);
 
@@ -375,6 +484,7 @@ export const App: React.FC = () => {
           if (isNewPeer) {
             sounds.playJoinChime();
           }
+
           setRemoteParticipants((prev) => {
             const exists = prev.some((p) => p.id === remoteP.id);
             if (exists) {
@@ -470,13 +580,22 @@ export const App: React.FC = () => {
 
       // 12. Host kicked this user
       case 'host-kick':
-        if (msg.targetId === userId) {
+        if (msg.targetId === userId && !localParticipantRef.current.isSuperAdmin) {
           handleLeaveMeeting();
           setNotice({
             title: 'Removed from the meeting',
             message: 'The host removed you from this meeting.',
           });
         }
+        break;
+
+      // 13. Super Admin closed room
+      case 'admin-room-closed':
+        handleLeaveMeeting();
+        setNotice({
+          title: 'Meeting Terminated',
+          message: 'This meeting was closed by a Super Administrator.',
+        });
         break;
 
       default:
@@ -487,9 +606,9 @@ export const App: React.FC = () => {
     screenSharingParticipantId,
     isChatOpen,
     connectPeer,
-    broadcastMyState,
     enterRoom,
     clearProbeTimers,
+    handleLeaveMeeting,
   ]);
 
   signalingHandlerRef.current = handleSignalingMessage;
@@ -514,7 +633,7 @@ export const App: React.FC = () => {
   // Drop peers that stopped heartbeating
   useEffect(() => {
     if (!inMeeting) return;
-    const interval = window.setInterval(() => {
+    const interval = setInterval(() => {
       const healthy = realtimeStatus === 'connected' || realtimeStatus === 'disabled';
       if (!healthy) return;
 
@@ -530,18 +649,18 @@ export const App: React.FC = () => {
       });
       setRemoteParticipants((prev) => prev.filter((p) => !stale.some((s) => s.id === p.id)));
     }, 10000);
-    return () => window.clearInterval(interval);
+    return () => clearInterval(interval);
   }, [inMeeting, realtimeStatus]);
 
-  // Keep DB and presence heartbeat alive
+  // Keep DB heartbeat alive
   useEffect(() => {
     if (!inMeeting || !roomId) return;
     void dbHeartbeat(roomId, userId);
 
-    const interval = window.setInterval(() => {
+    const interval = setInterval(() => {
       void dbHeartbeat(roomId, userId);
     }, 15000);
-    return () => window.clearInterval(interval);
+    return () => clearInterval(interval);
   }, [inMeeting, roomId, userId]);
 
   // Closing tab notifies peers
@@ -579,7 +698,7 @@ export const App: React.FC = () => {
     const left = Math.random() * 80 + 10;
     setFloatingEmojis((prev) => [...prev, { id: newId, emoji, left }]);
 
-    const timer = window.setTimeout(() => {
+    const timer = setTimeout(() => {
       setFloatingEmojis((prev) => prev.filter((item) => item.id !== newId));
       emojiTimersRef.current = emojiTimersRef.current.filter((t) => t !== timer);
     }, 2200);
@@ -616,7 +735,7 @@ export const App: React.FC = () => {
     setLocalParticipant(updatedLocal);
     localParticipantRef.current = updatedLocal;
 
-    // Synchronize with Supabase Database if available
+    // Check / Sync with Database with fast timeout
     const dbResult = await dbJoinOrCreateRoom({
       code: cleanId,
       userId,
@@ -626,12 +745,11 @@ export const App: React.FC = () => {
       requireApproval: data.requireHostApproval,
     });
 
-    if (!data.isHost) {
-      if (!dbResult.success && dbResult.error === 'ROOM_NOT_FOUND_OR_CLOSED') {
-        setJoinPhase('not-found');
-        joinPhaseRef.current = 'not-found';
-        return;
-      }
+    // If joining an existing room and DB confirmed it does NOT exist:
+    if (!data.isHost && !dbResult.success && dbResult.error === 'ROOM_NOT_FOUND_OR_CLOSED') {
+      setJoinPhase('not-found');
+      joinPhaseRef.current = 'not-found';
+      return;
     }
 
     // Setup Signaling Channel
@@ -671,13 +789,13 @@ export const App: React.FC = () => {
       });
     });
 
-    // Detect speaking levels with smoothing and debounce
+    // Detect speaking levels
     webrtc.setAudioLevelCallback((level) => {
       const isVoiceDetected = level > 25 && localParticipantRef.current.isAudioEnabled;
 
       if (isVoiceDetected) {
         if (speakingTimeoutRef.current) {
-          window.clearTimeout(speakingTimeoutRef.current);
+          clearTimeout(speakingTimeoutRef.current);
           speakingTimeoutRef.current = null;
         }
         if (!localParticipantRef.current.isSpeaking) {
@@ -692,7 +810,7 @@ export const App: React.FC = () => {
         }
       } else {
         if (localParticipantRef.current.isSpeaking && !speakingTimeoutRef.current) {
-          speakingTimeoutRef.current = window.setTimeout(() => {
+          speakingTimeoutRef.current = setTimeout(() => {
             speakingTimeoutRef.current = null;
             setLocalParticipant((prev) => {
               const next = { ...prev, isSpeaking: false, audioLevel: 0 };
@@ -707,14 +825,14 @@ export const App: React.FC = () => {
       }
     });
 
-    // If host created the meeting
+    // 1. If host created the meeting
     if (data.isHost || dbResult.isHost) {
       enterRoom();
       return;
     }
 
-    // If room is locked in DB
-    if (dbResult.isLocked) {
+    // 2. If room is known and locked in DB
+    if (dbResult.success && dbResult.isLocked) {
       setIsRoomLocked(true);
       isRoomLockedRef.current = true;
       setWaitingStatus('waiting');
@@ -726,18 +844,23 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Probing for active host in mesh/signaling
+    // 3. If room is known and unlocked in DB
+    if (dbResult.success) {
+      enterRoom();
+      return;
+    }
+
+    // 4. DB was offline or timed out -> probe live mesh
     setJoinPhase('probing');
     joinPhaseRef.current = 'probing';
-    
-    // Send probe
+
     signaling.send({
       type: 'room-probe',
       senderName: data.name,
     });
 
-    // Fallback timer: if no host responds in 2.5s and DB has active peers
-    const probeTimeout = window.setTimeout(async () => {
+    // Probe timeout: if no active host or peer responds within 2.5s, room is NOT found
+    const probeTimeout = setTimeout(async () => {
       if (joinPhaseRef.current === 'probing' && !inMeetingRef.current) {
         const existingActivePeers = await dbGetActiveParticipants(cleanId, userId);
         if (existingActivePeers.length > 0) {
@@ -749,32 +872,128 @@ export const App: React.FC = () => {
           });
           enterRoom();
         } else {
-          // If no response from any host, allow entering directly or show room prompt
-          enterRoom();
+          // STRICT: Room does not exist -> show RoomNotFoundModal (no creation permitted)
+          setJoinPhase('not-found');
+          joinPhaseRef.current = 'not-found';
+
+          if (signalingRef.current) {
+            signalingRef.current.disconnect();
+            signalingRef.current = null;
+          }
+          if (webrtcRef.current) {
+            webrtcRef.current.cleanup();
+            webrtcRef.current = null;
+          }
         }
       }
-    }, 2000);
+    }, 2500);
     probeTimersRef.current.push(probeTimeout);
   };
 
-  const handleStartMissingRoom = async () => {
-    sounds.playClick();
-    setIsHost(true);
-    const next: Participant = { ...localParticipantRef.current, isHost: true, joinedAt: Date.now() };
-    localParticipantRef.current = next;
-    setLocalParticipant(next);
+  // Join Room directly as Super Admin (unrestricted bypass, host privileges, golden badge)
+  const handleJoinAsSuperAdmin = async (roomCode: string) => {
+    const cleanId = cleanRoomCode(roomCode);
+    if (!cleanId) return;
 
-    const targetCode = pendingRoomRef.current || roomIdRef.current;
-    if (targetCode) {
-      await dbJoinOrCreateRoom({
-        code: targetCode,
-        userId,
-        userName: next.name,
-        avatarColor: next.avatarColor,
-        isCreate: true,
-        requireApproval: false,
+    setNotice(null);
+    setRoomId(cleanId);
+    roomIdRef.current = cleanId;
+    pendingRoomRef.current = cleanId;
+    setIsHost(true);
+    setIsRoomLocked(false);
+
+    const superAdminLocal: Participant = {
+      ...localParticipantRef.current,
+      name: 'Super Admin',
+      isHost: true,
+      isSuperAdmin: true,
+      role: 'superadmin',
+      avatarColor: 'from-amber-500 via-orange-600 to-indigo-700',
+      isAudioEnabled: true,
+      isVideoEnabled: true,
+      joinedAt: Date.now(),
+    };
+    setLocalParticipant(superAdminLocal);
+    localParticipantRef.current = superAdminLocal;
+
+    // Register / Update in Supabase
+    await dbJoinOrCreateRoom({
+      code: cleanId,
+      userId,
+      userName: 'Super Admin',
+      avatarColor: superAdminLocal.avatarColor,
+      isCreate: true,
+      requireApproval: false,
+    });
+
+    // Setup Signaling Channel
+    const signaling = new SignalingService(cleanId, userId);
+    signalingRef.current = signaling;
+    signaling.connect((msg) => signalingHandlerRef.current(msg));
+    signaling.onStatusChange(setRealtimeStatus);
+
+    signaling.onPresence((peerIds) => {
+      if (!inMeetingRef.current) return;
+      peerIds.forEach((peerId) => {
+        if (remoteParticipantsRef.current.some((p) => p.id === peerId)) return;
+        signaling.send({
+          type: 'state-update',
+          targetId: peerId,
+          payload: {
+            participant: localParticipantRef.current,
+            isRoomLocked: isRoomLockedRef.current,
+          },
+        });
       });
-    }
+    });
+
+    // Setup WebRTC Manager
+    const webrtc = new WebRTCManager(signaling, userId, handleRemoteStreamUpdate);
+    webrtcRef.current = webrtc;
+
+    webrtc.setScreenShareEndedCallback(() => {
+      setScreenStream(null);
+      setScreenSharingParticipantId(null);
+      setLocalParticipant((prev) => {
+        const reverted = { ...prev, isScreenSharing: false };
+        broadcastMyState(reverted);
+        return reverted;
+      });
+    });
+
+    webrtc.setAudioLevelCallback((level) => {
+      const isVoiceDetected = level > 25 && localParticipantRef.current.isAudioEnabled;
+      if (isVoiceDetected) {
+        if (speakingTimeoutRef.current) {
+          clearTimeout(speakingTimeoutRef.current);
+          speakingTimeoutRef.current = null;
+        }
+        if (!localParticipantRef.current.isSpeaking) {
+          setLocalParticipant((prev) => {
+            const next = { ...prev, isSpeaking: true, audioLevel: level };
+            signaling.send({
+              type: 'state-update',
+              payload: { participant: next },
+            });
+            return next;
+          });
+        }
+      } else {
+        if (localParticipantRef.current.isSpeaking && !speakingTimeoutRef.current) {
+          speakingTimeoutRef.current = setTimeout(() => {
+            speakingTimeoutRef.current = null;
+            setLocalParticipant((prev) => {
+              const next = { ...prev, isSpeaking: false, audioLevel: 0 };
+              signaling.send({
+                type: 'state-update',
+                payload: { participant: next },
+              });
+              return next;
+            });
+          }, 350);
+        }
+      }
+    });
 
     enterRoom();
   };
@@ -905,6 +1124,7 @@ export const App: React.FC = () => {
       text,
       timestamp: Date.now(),
       isHost: localParticipant.isHost,
+      isSuperAdmin: Boolean(localParticipant.isSuperAdmin),
     };
     setChatMessages((prev) => [...prev, chatMsg]);
 
@@ -973,56 +1193,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Leave Meeting
-  const handleLeaveMeeting = () => {
-    clearProbeTimers();
-
-    const targetCode = roomIdRef.current || pendingRoomRef.current;
-    if (targetCode) {
-      void dbLeaveRoom(targetCode, userId);
-    }
-
-    if (typeof window !== 'undefined' && window.location.pathname !== '/') {
-      window.history.pushState({}, '', '/');
-    }
-
-    if (signalingRef.current) {
-      signalingRef.current.send({
-        type: 'peer-left',
-      });
-      signalingRef.current.disconnect();
-      signalingRef.current = null;
-    }
-
-    if (webrtcRef.current) {
-      webrtcRef.current.cleanup();
-      webrtcRef.current = null;
-    }
-
-    lastSeenRef.current.clear();
-    screenShareBusyRef.current = false;
-    setLocalStream(null);
-    setScreenStream(null);
-    setRemoteStreams(new Map());
-    setRemoteParticipants([]);
-    setChatMessages([]);
-    setKnockRequests([]);
-    setInMeeting(false);
-    inMeetingRef.current = false;
-    setWaitingStatus('none');
-    setJoinPhase('idle');
-    joinPhaseRef.current = 'idle';
-    setPinnedParticipantId(null);
-    setScreenSharingParticipantId(null);
-    setUnreadChatCount(0);
-    setIsChatOpen(false);
-    setIsParticipantsOpen(false);
-    setIsSettingsOpen(false);
-    setIsHost(false);
-    setIsRoomLocked(false);
-    isRoomLockedRef.current = false;
-  };
-
   // Global Keyboard Shortcuts
   useEffect(() => {
     if (!inMeeting) return;
@@ -1069,7 +1239,6 @@ export const App: React.FC = () => {
         setIsParticipantsOpen(false);
         setIsSettingsOpen(false);
       } else if (e.code === 'Space' && !spacePressedRef.current) {
-        // Push to talk when muted
         if (!localParticipantRef.current.isAudioEnabled) {
           e.preventDefault();
           spacePressedRef.current = true;
@@ -1101,10 +1270,10 @@ export const App: React.FC = () => {
   // Unmount safety net
   useEffect(() => {
     return () => {
-      emojiTimersRef.current.forEach((t) => window.clearTimeout(t));
+      emojiTimersRef.current.forEach((t) => clearTimeout(t));
       emojiTimersRef.current = [];
       if (speakingTimeoutRef.current) {
-        window.clearTimeout(speakingTimeoutRef.current);
+        clearTimeout(speakingTimeoutRef.current);
       }
       if (signalingRef.current) {
         try {
@@ -1149,15 +1318,85 @@ export const App: React.FC = () => {
     );
   }
 
+  // Admin Login View
+  if (!inMeeting && currentView === 'admin-login') {
+    return (
+      <AdminLogin
+        onSuccess={(admin) => {
+          setAdminUser(admin);
+          setCurrentView('admin-dashboard');
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/admin/dashboard');
+          }
+        }}
+        onBackToApp={() => {
+          sounds.playClick();
+          setCurrentView('lobby');
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/');
+          }
+        }}
+      />
+    );
+  }
+
+  // Admin Dashboard View
+  if (!inMeeting && currentView === 'admin-dashboard' && adminUser) {
+    return (
+      <AdminDashboard
+        admin={adminUser}
+        onLogout={() => {
+          adminLogout();
+          setAdminUser(null);
+          setCurrentView('admin-login');
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/admin');
+          }
+        }}
+        onJoinAsSuperAdmin={(code) => {
+          handleJoinAsSuperAdmin(code);
+        }}
+        onBackToApp={() => {
+          sounds.playClick();
+          setCurrentView('lobby');
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/');
+          }
+        }}
+      />
+    );
+  }
+
   // Lobby View
   if (!inMeeting) {
     return (
       <>
-        <Lobby onJoin={handleJoinFromLobby} initialRoomId={initialRoomParam} />
+        <Lobby
+          onJoin={handleJoinFromLobby}
+          initialRoomId={initialRoomParam}
+          onOpenAdmin={() => {
+            const stored = getStoredAdminSession();
+            setAdminUser(stored);
+            setCurrentView(stored ? 'admin-dashboard' : 'admin-login');
+            if (typeof window !== 'undefined') {
+              window.history.pushState({}, '', '/admin');
+            }
+          }}
+        />
+        {joinPhase === 'probing' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-950/80 backdrop-blur-md animate-in fade-in duration-150">
+            <div className="p-6 rounded-3xl glass-panel border border-slate-700/60 shadow-2xl text-center space-y-3 max-w-xs w-full">
+              <div className="w-10 h-10 mx-auto rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 animate-spin">
+                <span className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent" />
+              </div>
+              <p className="text-sm font-semibold text-white">Connecting to room...</p>
+              <p className="text-xs text-slate-400">Looking for active meeting {roomId}</p>
+            </div>
+          </div>
+        )}
         {joinPhase === 'not-found' && (
           <RoomNotFoundModal
             roomId={roomId}
-            onStart={handleStartMissingRoom}
             onCancel={handleCancelMissingRoom}
           />
         )}
@@ -1183,6 +1422,7 @@ export const App: React.FC = () => {
       <MeetingHeader
         roomId={roomId}
         isHost={isHost}
+        isSuperAdmin={Boolean(localParticipant.isSuperAdmin)}
         isRoomLocked={isRoomLocked}
         participantsCount={remoteParticipants.length + 1}
       />
@@ -1196,7 +1436,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Connection Banner (Reconnecting notification) */}
+      {/* Connection Banner */}
       <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4 pointer-events-none">
         <ConnectionBanner status={realtimeStatus} />
       </div>

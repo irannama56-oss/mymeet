@@ -63,15 +63,11 @@ function createSyntheticStream(userName: string = 'User'): MediaStream {
           try {
             osc.stop();
             actx.close();
-          } catch {
-            /* already closed */
-          }
+          } catch {}
         });
       });
     }
-  } catch {
-    /* audio is optional for synthetic fallback */
-  }
+  } catch {}
 
   return stream;
 }
@@ -121,7 +117,7 @@ export class WebRTCManager {
   private audioAnalyser: AnalyserNode | null = null;
   private audioSource: MediaStreamAudioSourceNode | null = null;
   private audioContext: AudioContext | null = null;
-  private audioMeterInterval: number | null = null;
+  private audioMeterInterval: any = null;
   private onAudioLevelChange?: (level: number) => void;
   private onScreenShareEnded?: () => void;
 
@@ -277,21 +273,32 @@ export class WebRTCManager {
   }
 
   public syncLocalTracksToPeers() {
-    const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
-    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
-    const videoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || camTrack;
+    const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
+    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
+    const activeVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || camTrack;
 
-    this.peerConnections.forEach((pc) => {
+    this.peerConnections.forEach((pc, peerId) => {
       if (pc.signalingState === 'closed') return;
-      pc.getTransceivers().forEach((transceiver) => {
-        const kind = transceiver.receiver?.track?.kind;
-        if (!transceiver.sender) return;
-        if (kind === 'audio') {
-          transceiver.sender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
-        } else if (kind === 'video') {
-          transceiver.sender.replaceTrack(videoTrack).catch((e) => console.warn('replaceTrack video error:', e));
-        }
-      });
+
+      const transceivers = pc.getTransceivers();
+      let audioTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'audio');
+      let videoTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'video');
+
+      if (audioTransceiver?.sender) {
+        audioTransceiver.sender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
+      } else if (micTrack && this.localStream) {
+        try {
+          pc.addTrack(micTrack, this.localStream);
+        } catch (e) {}
+      }
+
+      if (videoTransceiver?.sender) {
+        videoTransceiver.sender.replaceTrack(activeVideoTrack).catch((e) => console.warn('replaceTrack video error:', e));
+      } else if (activeVideoTrack && (this.screenStream || this.localStream)) {
+        try {
+          pc.addTrack(activeVideoTrack, this.screenStream || this.localStream!);
+        } catch (e) {}
+      }
     });
   }
 
@@ -316,9 +323,7 @@ export class WebRTCManager {
       if (this.audioSource) {
         try {
           this.audioSource.disconnect();
-        } catch {
-          /* already detached */
-        }
+        } catch {}
         this.audioSource = null;
       }
 
@@ -336,7 +341,7 @@ export class WebRTCManager {
         clearInterval(this.audioMeterInterval);
       }
 
-      this.audioMeterInterval = window.setInterval(() => {
+      this.audioMeterInterval = setInterval(() => {
         if (!this.audioAnalyser || !this.onAudioLevelChange) return;
         this.audioAnalyser.getByteFrequencyData(dataArray);
         let sum = 0;
@@ -367,17 +372,7 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
-
-    if (!this.screenStream) {
-      const camTrack = enabled ? this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null : null;
-      this.peerConnections.forEach((pc) => {
-        if (pc.signalingState === 'closed') return;
-        pc.getTransceivers().forEach((transceiver) => {
-          if (transceiver.receiver?.track?.kind !== 'video' || !transceiver.sender) return;
-          transceiver.sender.replaceTrack(camTrack).catch((e) => console.warn('Error toggling video track:', e));
-        });
-      });
-    }
+    this.syncLocalTracksToPeers();
   }
 
   public async startScreenShare(): Promise<MediaStream> {
@@ -451,10 +446,10 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     this.peerConnections.set(targetPeerId, pc);
 
-    const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
+    const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoTrack = this.screenStream
       ? this.screenStream.getVideoTracks()[0]
-      : this.localStream?.getVideoTracks().find((t) => t.readyState === 'live' && t.enabled) || null;
+      : this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoStream = this.screenStream || this.localStream;
 
     try {
@@ -495,22 +490,30 @@ export class WebRTCManager {
     // Remote Track Handler
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Received remote track from ${targetPeerId}:`, event.track.kind);
-      const remoteStream = event.streams[0] || new MediaStream([event.track]);
+      const incomingStream = event.streams[0];
+      let currentStream = this.remoteStreams.get(targetPeerId);
 
-      const currentStream = this.remoteStreams.get(targetPeerId);
-      if (currentStream) {
+      if (!currentStream) {
+        currentStream = incomingStream ? new MediaStream(incomingStream.getTracks()) : new MediaStream([event.track]);
+        this.remoteStreams.set(targetPeerId, currentStream);
+      } else {
         if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
           currentStream.addTrack(event.track);
         }
-        this.onRemoteStreamUpdate(targetPeerId, currentStream);
-      } else {
-        this.remoteStreams.set(targetPeerId, remoteStream);
-        this.onRemoteStreamUpdate(targetPeerId, remoteStream);
       }
+
+      event.track.onended = () => {
+        if (currentStream) {
+          currentStream.removeTrack(event.track);
+          this.onRemoteStreamUpdate(targetPeerId, currentStream);
+        }
+      };
+
+      this.onRemoteStreamUpdate(targetPeerId, currentStream);
     };
 
     let restartAttempts = 0;
-    let disconnectTimer: number | null = null;
+    let disconnectTimer: any = null;
 
     const isCurrent = () => this.peerConnections.get(targetPeerId) === pc;
 
@@ -521,7 +524,7 @@ export class WebRTCManager {
 
       if (state === 'connected') {
         if (disconnectTimer !== null) {
-          window.clearTimeout(disconnectTimer);
+          clearTimeout(disconnectTimer);
           disconnectTimer = null;
         }
         restartAttempts = 0;
@@ -547,7 +550,7 @@ export class WebRTCManager {
 
       if (state === 'disconnected') {
         if (disconnectTimer === null) {
-          disconnectTimer = window.setTimeout(() => {
+          disconnectTimer = setTimeout(() => {
             disconnectTimer = null;
             if (isCurrent() && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
               this.closePeer(targetPeerId);
@@ -692,9 +695,7 @@ export class WebRTCManager {
     if (this.audioSource) {
       try {
         this.audioSource.disconnect();
-      } catch {
-        /* already detached */
-      }
+      } catch {}
       this.audioSource = null;
     }
     this.audioAnalyser = null;
@@ -713,9 +714,7 @@ export class WebRTCManager {
     this.peerConnections.forEach((pc) => {
       try {
         pc.close();
-      } catch {
-        /* already closed */
-      }
+      } catch {}
     });
     this.peerConnections.clear();
     this.iceQueues.clear();
