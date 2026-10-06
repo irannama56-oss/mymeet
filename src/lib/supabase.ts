@@ -27,6 +27,9 @@ async function withTimeout<T>(
   }
 }
 
+const DEFAULT_SUPABASE_URL = 'https://mqnmkzitqtpzfnkkrlnf.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xbm1reml0cXRwemZua2tybG5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExMzU4MDUsImV4cCI6MjEwNjcxMTgwNX0.FULEA-fKDRlonaX9COzt_1fkf005pqZNQK-BT___E40';
+
 // Helper to get Supabase credentials from env, localStorage, or defaults
 export function getSupabaseCredentials(): { url: string; key: string } {
   let localUrl = '';
@@ -40,11 +43,11 @@ export function getSupabaseCredentials(): { url: string; key: string } {
     }
   } catch {}
 
-  const envUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || '').trim();
-  const envKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '').trim();
+  const envUrl = ((import.meta.env?.VITE_SUPABASE_URL as string) || '').trim();
+  const envKey = ((import.meta.env?.VITE_SUPABASE_ANON_KEY as string) || '').trim();
 
-  const finalUrl = localUrl || (isInvalidOrPlaceholder(envUrl) ? '' : envUrl);
-  const finalKey = localKey || (isInvalidOrPlaceholder(envKey) ? '' : envKey);
+  const finalUrl = localUrl || (isInvalidOrPlaceholder(envUrl) ? DEFAULT_SUPABASE_URL : envUrl);
+  const finalKey = localKey || (isInvalidOrPlaceholder(envKey) ? DEFAULT_SUPABASE_KEY : envKey);
 
   return { url: finalUrl, key: finalKey };
 }
