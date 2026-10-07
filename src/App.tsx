@@ -153,6 +153,48 @@ export const App: React.FC = () => {
   const emojiTimersRef = useRef<any[]>([]);
   const emptyRoomTimerRef = useRef<any>(null);
 
+  // Selected media devices
+  const [selectedAudioInput, setSelectedAudioInput] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aura_audio_input') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [selectedVideoInput, setSelectedVideoInput] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aura_video_input') || '';
+    } catch {
+      return '';
+    }
+  });
+  const selectedAudioInputRef = useRef(selectedAudioInput);
+  selectedAudioInputRef.current = selectedAudioInput;
+  const selectedVideoInputRef = useRef(selectedVideoInput);
+  selectedVideoInputRef.current = selectedVideoInput;
+
+  // Global browser autoplay policy unlocker
+  useEffect(() => {
+    const unlockAudio = () => {
+      document.querySelectorAll('audio').forEach((el) => {
+        if (el.paused && el.srcObject) {
+          el.volume = 1.0;
+          el.muted = false;
+          el.play().catch(() => {});
+        }
+      });
+    };
+
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
   // Initial room detection from URL pathname
   const [initialRoomParam, setInitialRoomParam] = useState(getRoomSlugFromUrl);
 
@@ -208,13 +250,15 @@ export const App: React.FC = () => {
   }, []);
 
   // Acquire camera/mic
-  const startLocalMedia = useCallback(async () => {
+  const startLocalMedia = useCallback(async (audioDevId?: string, videoDevId?: string) => {
     const webrtc = webrtcRef.current;
     if (!webrtc || mediaBusyRef.current) return;
     mediaBusyRef.current = true;
     try {
       const p = localParticipantRef.current;
-      const stream = await webrtc.getLocalMedia(p.isAudioEnabled, p.isVideoEnabled);
+      const aId = audioDevId || selectedAudioInputRef.current;
+      const vId = videoDevId || selectedVideoInputRef.current;
+      const stream = await webrtc.getLocalMedia(p.isAudioEnabled, p.isVideoEnabled, aId, vId);
       if (webrtcRef.current !== webrtc) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -783,7 +827,20 @@ export const App: React.FC = () => {
     audioEnabled: boolean;
     videoEnabled: boolean;
     requireHostApproval: boolean;
+    audioDeviceId?: string;
+    videoDeviceId?: string;
   }) => {
+    if (data.audioDeviceId) {
+      setSelectedAudioInput(data.audioDeviceId);
+      selectedAudioInputRef.current = data.audioDeviceId;
+      try { localStorage.setItem('aura_audio_input', data.audioDeviceId); } catch {}
+    }
+    if (data.videoDeviceId) {
+      setSelectedVideoInput(data.videoDeviceId);
+      selectedVideoInputRef.current = data.videoDeviceId;
+      try { localStorage.setItem('aura_video_input', data.videoDeviceId); } catch {}
+    }
+
     const cleanId = cleanRoomCode(data.roomId);
     if (!cleanId) return;
 
@@ -1011,8 +1068,8 @@ export const App: React.FC = () => {
       // If no live track exists (was stopped/ended), re-acquire
       const hasLiveAudio = webrtc.getLocalStream()?.getAudioTracks().some((t) => t.readyState === 'live');
       if (!hasLiveAudio) {
-        const stream = await webrtc.ensureAudioTrack();
-        if (stream) setLocalStream(stream);
+        const stream = await webrtc.ensureAudioTrack(selectedAudioInputRef.current || undefined);
+        if (stream) setLocalStream(new MediaStream(stream.getTracks()));
       }
     } else {
       webrtc.toggleAudio(false);
@@ -1037,8 +1094,8 @@ export const App: React.FC = () => {
       // If no live track exists, re-acquire
       const hasLiveVideo = webrtc.getLocalStream()?.getVideoTracks().some((t) => t.readyState === 'live');
       if (!hasLiveVideo) {
-        const stream = await webrtc.ensureVideoTrack();
-        if (stream) setLocalStream(stream);
+        const stream = await webrtc.ensureVideoTrack(selectedVideoInputRef.current || undefined);
+        if (stream) setLocalStream(new MediaStream(stream.getTracks()));
       }
     } else {
       webrtc.toggleVideo(false);
@@ -1286,6 +1343,15 @@ export const App: React.FC = () => {
 
   // Change Device Input from Settings
   const handleDeviceChange = async (audioId: string, videoId: string) => {
+    setSelectedAudioInput(audioId);
+    setSelectedVideoInput(videoId);
+    selectedAudioInputRef.current = audioId;
+    selectedVideoInputRef.current = videoId;
+    try {
+      localStorage.setItem('aura_audio_input', audioId);
+      localStorage.setItem('aura_video_input', videoId);
+    } catch {}
+
     const webrtc = webrtcRef.current;
     if (!webrtc) return;
     const prev = localParticipantRef.current;
@@ -1470,6 +1536,8 @@ export const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        selectedAudioInput={selectedAudioInput}
+        selectedVideoInput={selectedVideoInput}
         onDeviceChange={handleDeviceChange}
         isNoiseCancellationEnabled={isNoiseCancellationEnabled}
         onToggleNoiseCancellation={handleToggleNoiseCancellation}

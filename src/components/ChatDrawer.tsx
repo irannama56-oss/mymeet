@@ -124,7 +124,8 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
                   <span className="text-[10px] text-slate-500 font-mono">{formatTime(msg.timestamp)}</span>
                 </div>
                 <div
-                  className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs leading-relaxed break-words shadow-md selectable-text ${
+                  dir="auto"
+                  className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs leading-relaxed break-words shadow-md select-text ${
                     isMe
                       ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white rounded-tr-xs'
                       : 'bg-slate-800/90 text-slate-100 border border-slate-700/60 rounded-tl-xs'
@@ -144,6 +145,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
         <div className="flex items-center space-x-2 bg-dark-900 border border-slate-700/80 rounded-2xl px-3.5 py-2.5 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-transparent transition-all">
           <input
             type="text"
+            dir="auto"
             placeholder="Send a message to everyone..."
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}

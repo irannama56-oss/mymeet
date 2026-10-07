@@ -1,80 +1,8 @@
 import { SignalingService } from './supabase';
 import { ScreenSharePreset } from './types';
 
-function createSyntheticStream(userName: string = 'User'): MediaStream {
-  if (typeof document === 'undefined') return new MediaStream();
-  const canvas = document.createElement('canvas');
-  canvas.width = 640;
-  canvas.height = 480;
-  const ctx = canvas.getContext('2d');
-
-  let frame = 0;
-  let rafId = 0;
-  function draw() {
-    if (!ctx) return;
-    ctx.fillStyle = '#090d16';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.beginPath();
-    ctx.arc(320, 240, 75 + Math.sin(frame * 0.08) * 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#6366f1';
-    ctx.fill();
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 54px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(userName.charAt(0).toUpperCase() || 'U', 320, 240);
-
-    frame++;
-    rafId = requestAnimationFrame(draw);
-  }
-  draw();
-
-  const stream = canvas.captureStream(20);
-
-  const stopDrawing = () => {
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-    }
-  };
-  stream.getVideoTracks().forEach((t) => {
-    t.addEventListener('ended', stopDrawing);
-  });
-
-  // Add silent audio track so negotiation has audio
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (AudioCtx) {
-      const actx = new AudioCtx();
-      const osc = actx.createOscillator();
-      const gain = actx.createGain();
-      gain.gain.value = 0;
-      osc.connect(gain);
-      const dest = actx.createMediaStreamDestination();
-      gain.connect(dest);
-      osc.start();
-      const audioTrack = dest.stream.getAudioTracks()[0];
-      if (audioTrack) {
-        stream.addTrack(audioTrack);
-      }
-      stream.getAudioTracks().forEach((t) => {
-        t.addEventListener('ended', () => {
-          try {
-            osc.stop();
-            actx.close();
-          } catch {}
-        });
-      });
-    }
-  } catch {}
-
-  return stream;
-}
-
 /**
- * ICE configuration with STUN and TURN relays
+ * ICE configuration with reliable STUN and TURN relays
  */
 function buildIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
@@ -168,20 +96,17 @@ export class WebRTCManager {
     try {
       pc.getSenders().forEach((sender) => {
         if (!sender.track) return;
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = [{}];
-        }
-        if (sender.track.kind === 'audio') {
-          // 32kbps Opus constraint for crystal clear voice + ultra-low data
-          params.encodings[0].maxBitrate = 32000;
-        } else if (sender.track.kind === 'video' && this.screenStream) {
+        if (sender.track.kind === 'video' && this.screenStream) {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
           const preset = this.screenSharePreset;
           params.encodings[0].maxBitrate =
             preset === 'low' ? 450000 : preset === 'high' ? 2500000 : 1200000;
           params.encodings[0].maxFramerate = preset === 'low' ? 15 : 30;
+          sender.setParameters(params).catch(() => {});
         }
-        sender.setParameters(params).catch(() => {});
       });
     } catch (e) {
       console.warn('Error setting sender parameters:', e);
@@ -225,7 +150,7 @@ export class WebRTCManager {
   }
 
   /**
-   * Acquire camera/mic with retry and fallback
+   * Acquire camera and microphone media with flexible fallbacks
    */
   public async getLocalMedia(
     audio: boolean = true,
@@ -233,171 +158,201 @@ export class WebRTCManager {
     audioDeviceId?: string,
     videoDeviceId?: string
   ): Promise<MediaStream> {
+    // Cleanly stop any existing tracks to prevent hardware lock
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
+    }
+
     if (!audio && !video) {
       const empty = new MediaStream();
-      if (this.localStream && this.localStream !== empty) {
-        this.localStream.getTracks().forEach((t) => t.stop());
-      }
       this.localStream = empty;
       this.syncLocalTracksToPeers();
       return empty;
     }
 
-    const attempt = async (): Promise<MediaStream> => {
-      const nc = this.isNoiseCancellationEnabled;
-      const constraints: MediaStreamConstraints = {
-        audio: audio
-          ? audioDeviceId
-            ? { deviceId: { exact: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
-            : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
-          : false,
-        video: video
-          ? videoDeviceId
-            ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-            : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-          : false,
-      };
-      return navigator.mediaDevices.getUserMedia(constraints);
-    };
+    const nc = this.isNoiseCancellationEnabled;
+
+    const audioConstraints: MediaTrackConstraints | boolean = audio
+      ? audioDeviceId
+        ? { deviceId: { ideal: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
+        : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
+      : false;
+
+    const videoConstraints: MediaTrackConstraints | boolean = video
+      ? videoDeviceId
+        ? { deviceId: { ideal: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+      : false;
 
     let stream: MediaStream | null = null;
 
     try {
-      stream = await attempt();
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: videoConstraints,
+      });
     } catch (err) {
-      const name = (err as DOMException)?.name;
-      const retryable = name === 'NotReadableError' || name === 'AbortError' || name === 'TrackStartError';
-      if (retryable) {
-        await new Promise((r) => setTimeout(r, 400));
-        try {
-          stream = await attempt();
-        } catch (retryErr) {
-          console.warn('Retry of user media failed:', retryErr);
+      console.warn('[WebRTC] Preferred getUserMedia failed, retrying with flexible constraints:', err);
+      // Fallback 1: retry without deviceId
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audio ? { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc } : false,
+          video: video ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+        });
+      } catch (err2) {
+        console.warn('[WebRTC] Flexible getUserMedia failed:', err2);
+        // Fallback 2: try audio-only if video caused the failure
+        if (audio) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (audioErr) {
+            console.warn('[WebRTC] Microphone access failed completely:', audioErr);
+          }
         }
-      } else {
-        console.warn('Could not get requested user media constraints:', err);
       }
     }
 
     if (!stream) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      } catch (audioErr) {
-        console.warn('Hardware media access failed, falling back to synthetic stream:', audioErr);
-        stream = createSyntheticStream('User');
-      }
+      stream = new MediaStream();
     }
 
-    if (this.localStream && this.localStream !== stream) {
-      this.localStream.getTracks().forEach((t) => t.stop());
-    }
+    // Set enabled state on tracks
+    stream.getAudioTracks().forEach((t) => { t.enabled = audio; });
+    stream.getVideoTracks().forEach((t) => { t.enabled = video; });
 
     this.localStream = stream;
-    this.setupAudioAnalysis(stream);
 
-    // Push tracks into all peer connections
+    if (stream.getAudioTracks().length > 0) {
+      this.setupAudioAnalysis(stream);
+    }
+
+    // Synchronize tracks into all peer connections
     this.syncLocalTracksToPeers();
 
     return stream;
   }
 
-  public async ensureAudioTrack(): Promise<MediaStream | null> {
-    if (!this.localStream) return null;
+  public async ensureAudioTrack(audioDeviceId?: string): Promise<MediaStream | null> {
+    if (!this.localStream) {
+      this.localStream = new MediaStream();
+    }
     const existing = this.localStream.getAudioTracks().find((t) => t.readyState === 'live');
     if (existing) {
       existing.enabled = true;
       this.syncLocalTracksToPeers();
       return this.localStream;
     }
+
     try {
       const nc = this.isNoiseCancellationEnabled;
       const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc },
+        audio: audioDeviceId
+          ? { deviceId: { ideal: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
+          : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc },
       });
       const track = mic.getAudioTracks()[0];
       if (track) {
+        track.enabled = true;
         this.localStream.addTrack(track);
         this.setupAudioAnalysis(this.localStream);
         this.syncLocalTracksToPeers();
       }
     } catch (e) {
-      console.warn('Could not re-acquire microphone:', e);
+      console.warn('[WebRTC] Could not re-acquire microphone:', e);
     }
     return this.localStream;
   }
 
   public async ensureVideoTrack(videoDeviceId?: string): Promise<MediaStream | null> {
-    if (!this.localStream) return null;
+    if (!this.localStream) {
+      this.localStream = new MediaStream();
+    }
     const existing = this.localStream.getVideoTracks().find((t) => t.readyState === 'live');
     if (existing) {
       existing.enabled = true;
       this.syncLocalTracksToPeers();
       return this.localStream;
     }
+
     try {
       const cam = await navigator.mediaDevices.getUserMedia({
         video: videoDeviceId
-          ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+          ? { deviceId: { ideal: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
           : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       });
       const track = cam.getVideoTracks()[0];
       if (track) {
+        track.enabled = true;
         this.localStream.addTrack(track);
         this.syncLocalTracksToPeers();
       }
     } catch (e) {
-      console.warn('Could not re-acquire camera:', e);
+      console.warn('[WebRTC] Could not re-acquire camera:', e);
     }
     return this.localStream;
   }
 
   /**
    * Sync local audio/video/screen tracks to all peer connections.
-   * Uses replaceTrack (no renegotiation) when a transceiver already exists.
-   * Finds transceivers by mid label convention set during createPeerConnection.
-   * BUG-FIX: Previous code filtered tracks by readyState==='live', which
-   * excluded disabled (muted) tracks — replaceTrack(null) silences without
-   * removing the transceiver, so the remote side sees muted state correctly.
+   * Matches senders and transceivers reliably by track kind without mid requirements.
    */
   public syncLocalTracksToPeers() {
-    // Audio: send the track even if disabled (track.enabled=false still sends silence frames)
-    const micTrack = this.localStream?.getAudioTracks()[0] || null;
-    const camTrack = this.localStream?.getVideoTracks()[0] || null;
+    const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
+    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
 
-    // Screen share takes priority over camera for the video transceiver
-    const screenVideoTrack = this.screenStream?.getVideoTracks()[0] || null;
+    // Screen share takes priority over camera for video transceiver
+    const screenVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoTrack = screenVideoTrack || camTrack;
 
     this.peerConnections.forEach((pc) => {
       if (pc.signalingState === 'closed') return;
 
-      const senders = pc.getSenders();
-      const audioSender = senders.find((s) => s.track?.kind === 'audio' || (!s.track && pc.getTransceivers().find((t) => t.sender === s && t.mid !== null && t.receiver?.track?.kind === 'audio')));
-      const videoSender = senders.find((s) => s.track?.kind === 'video' || (!s.track && pc.getTransceivers().find((t) => t.sender === s && t.mid !== null && t.receiver?.track?.kind === 'video')));
+      // 1. Audio Transceiver / Sender
+      const audioTransceiver = pc.getTransceivers().find(
+        (t) => t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio'
+      );
 
-      // Audio sender
-      if (audioSender) {
-        if (audioSender.track !== micTrack) {
-          audioSender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
+      if (audioTransceiver) {
+        if (audioTransceiver.sender.track !== micTrack) {
+          audioTransceiver.sender.replaceTrack(micTrack).catch((e) => console.warn('[WebRTC] replaceTrack audio error:', e));
+        }
+        if (micTrack && audioTransceiver.direction !== 'sendrecv') {
+          audioTransceiver.direction = 'sendrecv';
         }
       } else if (micTrack && this.localStream) {
-        try { pc.addTrack(micTrack, this.localStream); } catch (e) {}
+        try {
+          pc.addTrack(micTrack, this.localStream);
+        } catch (e) {
+          console.warn('[WebRTC] addTrack audio error:', e);
+        }
       }
 
-      // Video sender
-      if (videoSender) {
-        if (videoSender.track !== activeVideoTrack) {
-          videoSender.replaceTrack(activeVideoTrack || null).catch((e) => console.warn('replaceTrack video error:', e));
+      // 2. Video Transceiver / Sender
+      const videoTransceiver = pc.getTransceivers().find(
+        (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
+      );
+
+      if (videoTransceiver) {
+        if (videoTransceiver.sender.track !== activeVideoTrack) {
+          videoTransceiver.sender.replaceTrack(activeVideoTrack || null).catch((e) => console.warn('[WebRTC] replaceTrack video error:', e));
+        }
+        if (activeVideoTrack && videoTransceiver.direction !== 'sendrecv') {
+          videoTransceiver.direction = 'sendrecv';
         }
       } else if (activeVideoTrack && (this.screenStream || this.localStream)) {
-        try { pc.addTrack(activeVideoTrack, this.screenStream || this.localStream!); } catch (e) {}
+        try {
+          pc.addTrack(activeVideoTrack, this.screenStream || this.localStream!);
+        } catch (e) {
+          console.warn('[WebRTC] addTrack video error:', e);
+        }
       }
     });
   }
 
   public setupAudioAnalysis(stream: MediaStream) {
     try {
-      const audioTrack = stream.getAudioTracks()[0];
+      const audioTrack = stream.getAudioTracks().find((t) => t.readyState === 'live');
       if (!audioTrack) return;
 
       if (!this.audioContext) {
@@ -456,8 +411,6 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
-    // No syncLocalTracksToPeers needed: track.enabled=false sends silence
-    // frames automatically — the transceiver stays intact.
   }
 
   public toggleVideo(enabled: boolean) {
@@ -466,7 +419,6 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
-    // Same as audio: enabled=false sends black frames, no renegotiation.
   }
 
   public async startScreenShare(): Promise<MediaStream> {
@@ -490,12 +442,14 @@ export class WebRTCManager {
       const screenTrack = screenStream.getVideoTracks()[0];
 
       if (screenTrack) {
-        // Replace the video track on all peer connections with the screen track
+        // Replace the video track on all peer connections with screen track
         this.peerConnections.forEach((pc) => {
           if (pc.signalingState === 'closed') return;
-          const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (videoSender) {
-            videoSender.replaceTrack(screenTrack).catch((e) => console.warn('Error replacing screen track:', e));
+          const videoTransceiver = pc.getTransceivers().find(
+            (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
+          );
+          if (videoTransceiver) {
+            videoTransceiver.sender.replaceTrack(screenTrack).catch((e) => console.warn('Error replacing screen track:', e));
           } else {
             try { pc.addTrack(screenTrack, screenStream); } catch (e) {}
           }
@@ -545,9 +499,9 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     this.peerConnections.set(targetPeerId, pc);
 
-    const audioTrack = this.localStream?.getAudioTracks()[0] || null;
-    const screenVideoTrack = this.screenStream?.getVideoTracks()[0] || null;
-    const camVideoTrack = this.localStream?.getVideoTracks()[0] || null;
+    const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
+    const screenVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
+    const camVideoTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoTrack = screenVideoTrack || camVideoTrack || null;
     const activeVideoStream = this.screenStream || this.localStream;
 
@@ -590,34 +544,39 @@ export class WebRTCManager {
 
     // Automatic renegotiation when tracks are added/removed
     pc.onnegotiationneeded = () => {
-      if (initiator && !this.negotiating.has(targetPeerId) && pc.signalingState === 'stable') {
+      if (!this.negotiating.has(targetPeerId) && pc.signalingState === 'stable') {
         void this.initiateOffer(targetPeerId, pc, true);
       }
     };
 
     // Remote Track Handler
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Received remote track from ${targetPeerId}:`, event.track.kind);
-      const incomingStream = event.streams[0];
+      console.log(`[WebRTC] Received remote track from ${targetPeerId}: kind=${event.track.kind}, id=${event.track.id}`);
+      event.track.enabled = true;
+
       let currentStream = this.remoteStreams.get(targetPeerId);
 
       if (!currentStream) {
-        currentStream = incomingStream ? new MediaStream(incomingStream.getTracks()) : new MediaStream([event.track]);
-        this.remoteStreams.set(targetPeerId, currentStream);
-      } else {
-        if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
-          currentStream.addTrack(event.track);
-        }
+        currentStream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream();
       }
+
+      if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
+        currentStream.addTrack(event.track);
+      }
+      this.remoteStreams.set(targetPeerId, currentStream);
+
+      // Create a fresh wrapper to ensure React components trigger state update
+      const streamWrapper = new MediaStream(currentStream.getTracks());
 
       event.track.onended = () => {
         if (currentStream) {
           currentStream.removeTrack(event.track);
-          this.onRemoteStreamUpdate(targetPeerId, new MediaStream(currentStream.getTracks()));
+          const remaining = currentStream.getTracks();
+          this.onRemoteStreamUpdate(targetPeerId, remaining.length > 0 ? new MediaStream(remaining) : null);
         }
       };
 
-      this.onRemoteStreamUpdate(targetPeerId, new MediaStream(currentStream.getTracks()));
+      this.onRemoteStreamUpdate(targetPeerId, streamWrapper);
     };
 
     let restartAttempts = 0;

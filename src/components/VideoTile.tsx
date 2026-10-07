@@ -69,9 +69,14 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   const attachAudio = useCallback(
     (el: HTMLAudioElement | null) => {
       audioRef.current = el;
-      if (el && stream && !isLocal && !disableAudio) {
-        if (el.srcObject !== stream) {
-          el.srcObject = stream;
+      if (el) {
+        el.volume = 1.0;
+        el.muted = false;
+        if (stream && !isLocal && !disableAudio) {
+          if (el.srcObject !== stream) {
+            el.srcObject = stream;
+          }
+          el.play().catch(() => {});
         }
       }
     },
@@ -83,6 +88,9 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     if (isLocal || disableAudio || !stream) return;
     const el = audioRef.current;
     if (!el) return;
+
+    el.volume = 1.0;
+    el.muted = false;
 
     if (el.srcObject !== stream) {
       el.srcObject = stream;
@@ -96,10 +104,15 @@ export const VideoTile: React.FC<VideoTileProps> = ({
         p.catch(() => {
           if (cancelled) return;
           const resume = () => {
-            el.play().catch(() => {});
+            if (el) {
+              el.volume = 1.0;
+              el.muted = false;
+              el.play().catch(() => {});
+            }
           };
-          document.addEventListener('click', resume, { once: true });
-          document.addEventListener('keydown', resume, { once: true });
+          window.addEventListener('click', resume, { once: true });
+          window.addEventListener('touchstart', resume, { once: true });
+          window.addEventListener('keydown', resume, { once: true });
         });
       }
     };
@@ -161,12 +174,12 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           : 'border-slate-800/90 hover:border-slate-700'
       }`}
     >
-      {/* Remote Audio Element */}
+      {/* Remote Audio Element - dedicated audio channel */}
       {!isLocal && !disableAudio && (
         <audio ref={attachAudio} autoPlay playsInline />
       )}
 
-      {/* Video Element */}
+      {/* Video Element - kept muted={true} always so dedicated audio element is the single audio source */}
       {hasActiveVideo ? (
         <video
           ref={(el) => {
@@ -178,7 +191,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           }}
           autoPlay
           playsInline
-          muted={isLocal}
+          muted={true}
           className={`w-full h-full bg-black/50 transition-all duration-300 ${
             isLocal && !isScreenShareTile && !participant.isScreenSharing
               ? '-scale-x-100 object-cover'

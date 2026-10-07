@@ -17,6 +17,8 @@ interface LobbyProps {
     audioEnabled: boolean;
     videoEnabled: boolean;
     requireHostApproval: boolean;
+    audioDeviceId?: string;
+    videoDeviceId?: string;
   }) => void;
   initialRoomId?: string;
 }
@@ -206,6 +208,8 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
       audioEnabled: isAudioEnabled,
       videoEnabled: isVideoEnabled,
       requireHostApproval: isCreatingNew ? requireHostApproval : false,
+      audioDeviceId: selectedAudioId || undefined,
+      videoDeviceId: selectedVideoId || undefined,
     });
   };
 
