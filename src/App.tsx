@@ -34,7 +34,7 @@ import { RoomNotFoundModal } from './components/RoomNotFoundModal';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { NoticeModal } from './components/NoticeModal';
 
-const PEER_TIMEOUT_MS = 45000;
+const PEER_TIMEOUT_MS = 90000;
 
 const AVATAR_COLORS = [
   'from-indigo-500 to-purple-600',
@@ -594,6 +594,27 @@ export const App: React.FC = () => {
   ]);
 
   signalingHandlerRef.current = handleSignalingMessage;
+
+  // Immediate reconnect & state sync when tab becomes visible again
+  useEffect(() => {
+    if (!inMeeting) return;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[App] Tab became visible, sending state update...');
+        if (signalingRef.current && localParticipantRef.current) {
+          signalingRef.current.send({
+            type: 'state-update',
+            payload: {
+              participant: localParticipantRef.current,
+              isRoomLocked: isRoomLockedRef.current,
+            },
+          });
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [inMeeting]);
 
   // Periodic presence heartbeat while in meeting
   useEffect(() => {

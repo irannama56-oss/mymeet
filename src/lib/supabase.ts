@@ -551,8 +551,26 @@ export class SignalingService {
     this.statusHandler?.(status);
   }
 
+  private onlineListener: (() => void) | null = null;
+
   public connect(onMessage: (msg: SignalingMessage) => void) {
     this.messageHandler = onMessage;
+
+    // Automatic immediate reconnect when network interface comes back online
+    if (typeof window !== 'undefined') {
+      this.onlineListener = () => {
+        console.log('[Signaling] Network came online, triggering immediate reconnect...');
+        const client = getSupabaseClient();
+        if (client && !this.disposed) {
+          if (this.retryTimer) {
+            clearTimeout(this.retryTimer);
+            this.retryTimer = null;
+          }
+          this.subscribeToChannel(client);
+        }
+      };
+      window.addEventListener('online', this.onlineListener);
+    }
 
     // Local Browser BroadcastChannel for instant cross-tab testing
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -628,9 +646,9 @@ export class SignalingService {
 
   private scheduleResubscribe(client: SupabaseClient) {
     if (this.disposed || this.retryTimer !== null) return;
-    if (this.retryCount >= 5) return;
 
-    const delay = Math.min(8000, 1000 * Math.pow(1.5, this.retryCount));
+    // Exponential backoff capped at 5 seconds for fast recovery
+    const delay = Math.min(5000, 1000 * Math.pow(1.3, Math.min(this.retryCount, 6)));
     this.retryCount += 1;
 
     this.retryTimer = setTimeout(() => {
@@ -731,6 +749,10 @@ export class SignalingService {
 
   public disconnect() {
     this.disposed = true;
+    if (typeof window !== 'undefined' && this.onlineListener) {
+      window.removeEventListener('online', this.onlineListener);
+      this.onlineListener = null;
+    }
     if (this.retryTimer !== null) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;

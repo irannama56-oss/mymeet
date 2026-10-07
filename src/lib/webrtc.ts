@@ -625,12 +625,13 @@ export class WebRTCManager {
 
     const isCurrent = () => this.peerConnections.get(targetPeerId) === pc;
 
-    pc.onconnectionstatechange = () => {
+    const handleConnectionDrop = () => {
       if (!isCurrent()) return;
       const state = pc.connectionState;
-      console.log(`[WebRTC] Peer ${targetPeerId} connection state:`, state);
+      const iceState = pc.iceConnectionState;
+      console.log(`[WebRTC] Peer ${targetPeerId} state - conn: ${state}, ice: ${iceState}`);
 
-      if (state === 'connected') {
+      if (state === 'connected' || iceState === 'connected' || iceState === 'completed') {
         if (disconnectTimer !== null) {
           clearTimeout(disconnectTimer);
           disconnectTimer = null;
@@ -639,39 +640,44 @@ export class WebRTCManager {
         return;
       }
 
-      if (state === 'failed') {
-        if (restartAttempts < 2) {
+      if (state === 'failed' || iceState === 'failed' || state === 'disconnected' || iceState === 'disconnected') {
+        if (restartAttempts < 3) {
           restartAttempts += 1;
+          console.log(`[WebRTC] Attempting ICE restart for ${targetPeerId} (attempt ${restartAttempts})...`);
           try {
             pc.restartIce();
-            if (initiator) {
+            if (initiator || this.myId > targetPeerId) {
               void this.initiateOffer(targetPeerId, pc, true);
-              return;
             }
           } catch (e) {
-            console.warn('ICE restart failed:', e);
+            console.warn('ICE restart trigger failed:', e);
           }
         }
-        this.closePeer(targetPeerId);
-        return;
-      }
 
-      if (state === 'disconnected') {
         if (disconnectTimer === null) {
+          // Allow 15 seconds grace period for ICE restart & auto-reconnect before closing peer
           disconnectTimer = setTimeout(() => {
             disconnectTimer = null;
-            if (isCurrent() && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
-              this.closePeer(targetPeerId);
+            if (isCurrent()) {
+              const currentConn = pc.connectionState;
+              const currentIce = pc.iceConnectionState;
+              if (currentConn === 'failed' || currentConn === 'disconnected' || currentIce === 'failed' || currentIce === 'disconnected') {
+                console.warn(`[WebRTC] Peer ${targetPeerId} failed to reconnect after 15s. Closing peer.`);
+                this.closePeer(targetPeerId);
+              }
             }
-          }, 6000);
+          }, 15000);
         }
         return;
       }
 
-      if (state === 'closed') {
+      if (state === 'closed' || iceState === 'closed') {
         this.closePeer(targetPeerId);
       }
     };
+
+    pc.onconnectionstatechange = handleConnectionDrop;
+    pc.oniceconnectionstatechange = handleConnectionDrop;
 
     if (initiator) {
       this.initiateOffer(targetPeerId, pc);
@@ -784,6 +790,7 @@ export class WebRTCManager {
     const pc = this.peerConnections.get(peerId);
     if (pc) {
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onnegotiationneeded = null;
