@@ -158,6 +158,7 @@ export const App: React.FC = () => {
   chatMessagesRef.current = chatMessages;
   const mediaBusyRef = useRef(false);
   const emojiTimersRef = useRef<any[]>([]);
+  const emptyRoomTimerRef = useRef<any>(null);
 
   // Initial room detection from URL pathname
   const [initialRoomParam, setInitialRoomParam] = useState(getRoomSlugFromUrl);
@@ -272,6 +273,12 @@ export const App: React.FC = () => {
   // Leave Meeting Helper
   const handleLeaveMeeting = useCallback(() => {
     clearProbeTimers();
+
+    // Cancel auto-close timer if running
+    if (emptyRoomTimerRef.current) {
+      clearTimeout(emptyRoomTimerRef.current);
+      emptyRoomTimerRef.current = null;
+    }
 
     const targetCode = roomIdRef.current || pendingRoomRef.current;
     if (targetCode) {
@@ -653,6 +660,53 @@ export const App: React.FC = () => {
     }, 10000);
     return () => clearInterval(interval);
   }, [inMeeting, realtimeStatus]);
+
+  // Auto-close empty meeting after 30 minutes with no other participants
+  useEffect(() => {
+    if (!inMeeting) {
+      if (emptyRoomTimerRef.current) {
+        clearTimeout(emptyRoomTimerRef.current);
+        emptyRoomTimerRef.current = null;
+      }
+      return;
+    }
+
+    const hasRemote = remoteParticipants.length > 0;
+
+    if (hasRemote) {
+      // Someone is in the room — cancel any pending auto-close
+      if (emptyRoomTimerRef.current) {
+        clearTimeout(emptyRoomTimerRef.current);
+        emptyRoomTimerRef.current = null;
+      }
+    } else {
+      // Room is empty (only local user) — start 30-minute countdown
+      if (!emptyRoomTimerRef.current) {
+        emptyRoomTimerRef.current = setTimeout(() => {
+          emptyRoomTimerRef.current = null;
+          // Only leave if still in meeting and still alone
+          if (inMeetingRef.current && remoteParticipantsRef.current.length === 0) {
+            console.log('[AutoClose] Meeting empty for 30 minutes, auto-closing.');
+            if (roomIdRef.current) {
+              void dbCloseRoom(roomIdRef.current);
+            }
+            handleLeaveMeeting();
+            setNotice({
+              title: 'Meeting Auto-Closed',
+              message: 'This meeting was automatically closed after 30 minutes with no participants.',
+            });
+          }
+        }, 30 * 60 * 1000); // 30 minutes
+      }
+    }
+
+    return () => {
+      if (emptyRoomTimerRef.current) {
+        clearTimeout(emptyRoomTimerRef.current);
+        emptyRoomTimerRef.current = null;
+      }
+    };
+  }, [inMeeting, remoteParticipants.length, handleLeaveMeeting]);
 
   // Keep DB heartbeat alive
   useEffect(() => {
@@ -1038,8 +1092,14 @@ export const App: React.FC = () => {
     if (!webrtc) return;
 
     if (nextState) {
-      const stream = await webrtc.ensureAudioTrack();
-      if (stream) setLocalStream(stream);
+      // Re-enable: first try just enabling existing tracks
+      webrtc.toggleAudio(true);
+      // If no live track exists (was stopped/ended), re-acquire
+      const hasLiveAudio = webrtc.getLocalStream()?.getAudioTracks().some((t) => t.readyState === 'live');
+      if (!hasLiveAudio) {
+        const stream = await webrtc.ensureAudioTrack();
+        if (stream) setLocalStream(stream);
+      }
     } else {
       webrtc.toggleAudio(false);
     }
@@ -1058,8 +1118,14 @@ export const App: React.FC = () => {
     if (!webrtc) return;
 
     if (nextState) {
-      const stream = await webrtc.ensureVideoTrack();
-      if (stream) setLocalStream(stream);
+      // Re-enable: first try just enabling existing tracks
+      webrtc.toggleVideo(true);
+      // If no live track exists, re-acquire
+      const hasLiveVideo = webrtc.getLocalStream()?.getVideoTracks().some((t) => t.readyState === 'live');
+      if (!hasLiveVideo) {
+        const stream = await webrtc.ensureVideoTrack();
+        if (stream) setLocalStream(stream);
+      }
     } else {
       webrtc.toggleVideo(false);
     }

@@ -277,34 +277,46 @@ export class WebRTCManager {
     return this.localStream;
   }
 
+  /**
+   * Sync local audio/video/screen tracks to all peer connections.
+   * Uses replaceTrack (no renegotiation) when a transceiver already exists.
+   * Finds transceivers by mid label convention set during createPeerConnection.
+   * BUG-FIX: Previous code filtered tracks by readyState==='live', which
+   * excluded disabled (muted) tracks — replaceTrack(null) silences without
+   * removing the transceiver, so the remote side sees muted state correctly.
+   */
   public syncLocalTracksToPeers() {
-    const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
-    const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
-    const activeVideoTrack = (this.screenStream
-      ? this.screenStream.getVideoTracks().find((t) => t.readyState === 'live')
-      : camTrack) || null;
+    // Audio: send the track even if disabled (track.enabled=false still sends silence frames)
+    const micTrack = this.localStream?.getAudioTracks()[0] || null;
+    const camTrack = this.localStream?.getVideoTracks()[0] || null;
+
+    // Screen share takes priority over camera for the video transceiver
+    const screenVideoTrack = this.screenStream?.getVideoTracks()[0] || null;
+    const activeVideoTrack = screenVideoTrack || camTrack;
 
     this.peerConnections.forEach((pc) => {
       if (pc.signalingState === 'closed') return;
 
-      const transceivers = pc.getTransceivers();
-      let audioTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'audio' || t.sender?.track?.kind === 'audio');
-      let videoTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'video' || t.sender?.track?.kind === 'video');
+      const senders = pc.getSenders();
+      const audioSender = senders.find((s) => s.track?.kind === 'audio' || (!s.track && pc.getTransceivers().find((t) => t.sender === s && t.mid !== null && t.receiver?.track?.kind === 'audio')));
+      const videoSender = senders.find((s) => s.track?.kind === 'video' || (!s.track && pc.getTransceivers().find((t) => t.sender === s && t.mid !== null && t.receiver?.track?.kind === 'video')));
 
-      if (audioTransceiver?.sender) {
-        audioTransceiver.sender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
+      // Audio sender
+      if (audioSender) {
+        if (audioSender.track !== micTrack) {
+          audioSender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
+        }
       } else if (micTrack && this.localStream) {
-        try {
-          pc.addTrack(micTrack, this.localStream);
-        } catch (e) {}
+        try { pc.addTrack(micTrack, this.localStream); } catch (e) {}
       }
 
-      if (videoTransceiver?.sender) {
-        videoTransceiver.sender.replaceTrack(activeVideoTrack).catch((e) => console.warn('replaceTrack video error:', e));
+      // Video sender
+      if (videoSender) {
+        if (videoSender.track !== activeVideoTrack) {
+          videoSender.replaceTrack(activeVideoTrack || null).catch((e) => console.warn('replaceTrack video error:', e));
+        }
       } else if (activeVideoTrack && (this.screenStream || this.localStream)) {
-        try {
-          pc.addTrack(activeVideoTrack, this.screenStream || this.localStream!);
-        } catch (e) {}
+        try { pc.addTrack(activeVideoTrack, this.screenStream || this.localStream!); } catch (e) {}
       }
     });
   }
@@ -370,7 +382,8 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
-    this.syncLocalTracksToPeers();
+    // No syncLocalTracksToPeers needed: track.enabled=false sends silence
+    // frames automatically — the transceiver stays intact.
   }
 
   public toggleVideo(enabled: boolean) {
@@ -379,7 +392,7 @@ export class WebRTCManager {
         track.enabled = enabled;
       });
     }
-    this.syncLocalTracksToPeers();
+    // Same as audio: enabled=false sends black frames, no renegotiation.
   }
 
   public async startScreenShare(): Promise<MediaStream> {
@@ -396,20 +409,14 @@ export class WebRTCManager {
       const screenTrack = screenStream.getVideoTracks()[0];
 
       if (screenTrack) {
+        // Replace the video track on all peer connections with the screen track
         this.peerConnections.forEach((pc) => {
           if (pc.signalingState === 'closed') return;
-          const videoTransceiver = pc
-            .getTransceivers()
-            .find((t) => t.receiver?.track?.kind === 'video' && t.sender);
-
-          if (videoTransceiver?.sender) {
-            videoTransceiver.sender.replaceTrack(screenTrack).catch((e) => console.warn('Error replacing screen track:', e));
+          const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (videoSender) {
+            videoSender.replaceTrack(screenTrack).catch((e) => console.warn('Error replacing screen track:', e));
           } else {
-            try {
-              pc.addTrack(screenTrack, screenStream);
-            } catch (e) {
-              console.warn('Error adding screen track to peer:', e);
-            }
+            try { pc.addTrack(screenTrack, screenStream); } catch (e) {}
           }
         });
 
@@ -456,10 +463,10 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     this.peerConnections.set(targetPeerId, pc);
 
-    const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
-    const activeVideoTrack = this.screenStream
-      ? this.screenStream.getVideoTracks().find((t) => t.readyState === 'live')
-      : this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
+    const audioTrack = this.localStream?.getAudioTracks()[0] || null;
+    const screenVideoTrack = this.screenStream?.getVideoTracks()[0] || null;
+    const camVideoTrack = this.localStream?.getVideoTracks()[0] || null;
+    const activeVideoTrack = screenVideoTrack || camVideoTrack || null;
     const activeVideoStream = this.screenStream || this.localStream;
 
     try {
@@ -494,6 +501,13 @@ export class WebRTCManager {
             sdpMLineIndex: event.candidate.sdpMLineIndex,
           },
         });
+      }
+    };
+
+    // Automatic renegotiation when tracks are added/removed
+    pc.onnegotiationneeded = () => {
+      if (initiator && !this.negotiating.has(targetPeerId) && pc.signalingState === 'stable') {
+        void this.initiateOffer(targetPeerId, pc, true);
       }
     };
 
@@ -688,6 +702,7 @@ export class WebRTCManager {
       pc.onconnectionstatechange = null;
       pc.onicecandidate = null;
       pc.ontrack = null;
+      pc.onnegotiationneeded = null;
       try {
         pc.close();
       } catch {}
