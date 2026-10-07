@@ -188,7 +188,14 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       }`}
     >
       {/* Remote Audio Element */}
-      {!isLocal && !disableAudio && <audio ref={attachAudio} autoPlay playsInline />}
+      {!isLocal && !disableAudio && (
+        <audio 
+          ref={attachAudio} 
+          autoPlay 
+          playsInline 
+          onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})} 
+        />
+      )}
 
       {/* Video Element */}
       {hasActiveVideo ? (
@@ -197,6 +204,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           autoPlay
           playsInline
           muted={isLocal}
+          onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
           className={`w-full h-full object-contain bg-black/50 transition-all duration-300 ${
             isLocal && !isScreenShareTile && !participant.isScreenSharing
               ? '-scale-x-100 object-cover'

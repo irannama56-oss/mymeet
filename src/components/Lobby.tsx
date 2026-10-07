@@ -172,7 +172,11 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpen
 
   const toggleAudio = () => {
     sounds.playClick();
-    setIsAudioEnabled((prev) => !prev);
+    setIsAudioEnabled((prev) => {
+      const next = !prev;
+      if (!next) setAudioLevel(0);
+      return next;
+    });
   };
 
   const toggleVideo = () => {

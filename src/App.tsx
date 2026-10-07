@@ -535,12 +535,14 @@ export const App: React.FC = () => {
       case 'chat-message':
         if (msg.payload) {
           const newChat: ChatMessage = msg.payload;
-          sounds.playMessagePop();
-          setChatMessages((prev) =>
-            prev.some((m) => m.id === newChat.id) ? prev : [...prev, newChat]
-          );
-          if (!isChatOpen) {
-            setUnreadChatCount((prev) => prev + 1);
+          if (newChat.senderId !== userId) {
+            sounds.playMessagePop();
+            setChatMessages((prev) =>
+              prev.some((m) => m.id === newChat.id) ? prev : [...prev, newChat]
+            );
+            if (!isChatOpen) {
+              setUnreadChatCount((prev) => prev + 1);
+            }
           }
         }
         break;
@@ -784,6 +786,7 @@ export const App: React.FC = () => {
       setScreenSharingParticipantId(null);
       setLocalParticipant((prev) => {
         const reverted = { ...prev, isScreenSharing: false };
+        localParticipantRef.current = reverted;
         broadcastMyState(reverted);
         return reverted;
       });
@@ -956,6 +959,7 @@ export const App: React.FC = () => {
       setScreenSharingParticipantId(null);
       setLocalParticipant((prev) => {
         const reverted = { ...prev, isScreenSharing: false };
+        localParticipantRef.current = reverted;
         broadcastMyState(reverted);
         return reverted;
       });
@@ -1259,11 +1263,23 @@ export const App: React.FC = () => {
       }
     };
 
+    const handleWindowBlur = () => {
+      if (spacePressedRef.current) {
+        spacePressedRef.current = false;
+        if (preSpaceMutedRef.current && localParticipantRef.current.isAudioEnabled) {
+          void handleToggleAudio();
+        }
+        preSpaceMutedRef.current = false;
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   }, [inMeeting]);
 

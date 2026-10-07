@@ -80,17 +80,20 @@ function buildIceServers(): RTCIceServer[] {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
   ];
 
-  const turnUrls = (import.meta.env.VITE_TURN_URL || 'turn:openrelay.metered.ca:80')
+  const envTurnUrl = import.meta.env.VITE_TURN_URL;
+  const rawTurnUrls = (envTurnUrl || 'turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443,turns:openrelay.metered.ca:443?transport=tcp')
     .split(',')
     .map((s: string) => s.trim())
     .filter(Boolean);
 
-  if (turnUrls.length > 0) {
+  if (rawTurnUrls.length > 0) {
     servers.push({
-      urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
+      urls: rawTurnUrls.length === 1 ? rawTurnUrls[0] : rawTurnUrls,
       username: import.meta.env.VITE_TURN_USERNAME || 'openrelayproject',
       credential: import.meta.env.VITE_TURN_CREDENTIAL || 'openrelayproject',
     });
@@ -102,6 +105,8 @@ function buildIceServers(): RTCIceServer[] {
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: buildIceServers(),
   iceCandidatePoolSize: 10,
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
 };
 
 export class WebRTCManager {
@@ -275,14 +280,16 @@ export class WebRTCManager {
   public syncLocalTracksToPeers() {
     const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
     const camTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
-    const activeVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || camTrack;
+    const activeVideoTrack = (this.screenStream
+      ? this.screenStream.getVideoTracks().find((t) => t.readyState === 'live')
+      : camTrack) || null;
 
-    this.peerConnections.forEach((pc, peerId) => {
+    this.peerConnections.forEach((pc) => {
       if (pc.signalingState === 'closed') return;
 
       const transceivers = pc.getTransceivers();
-      let audioTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'audio');
-      let videoTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'video');
+      let audioTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'audio' || t.sender?.track?.kind === 'audio');
+      let videoTransceiver = transceivers.find((t) => t.receiver?.track?.kind === 'video' || t.sender?.track?.kind === 'video');
 
       if (audioTransceiver?.sender) {
         audioTransceiver.sender.replaceTrack(micTrack).catch((e) => console.warn('replaceTrack audio error:', e));
@@ -432,15 +439,18 @@ export class WebRTCManager {
   public createPeerConnection(targetPeerId: string, initiator: boolean): RTCPeerConnection {
     if (this.peerConnections.has(targetPeerId)) {
       const existing = this.peerConnections.get(targetPeerId)!;
-      const alreadyNegotiated =
-        Boolean(existing.currentRemoteDescription) ||
-        existing.connectionState === 'connected' ||
-        existing.connectionState === 'connecting';
+      if (existing.signalingState !== 'closed') {
+        const alreadyNegotiated =
+          Boolean(existing.currentRemoteDescription) ||
+          existing.connectionState === 'connected' ||
+          existing.connectionState === 'connecting';
 
-      if (initiator && existing.signalingState === 'stable' && !alreadyNegotiated && !this.negotiating.has(targetPeerId)) {
-        void this.initiateOffer(targetPeerId, existing);
+        if (initiator && existing.signalingState === 'stable' && !alreadyNegotiated && !this.negotiating.has(targetPeerId)) {
+          void this.initiateOffer(targetPeerId, existing);
+        }
+        return existing;
       }
-      return existing;
+      this.peerConnections.delete(targetPeerId);
     }
 
     const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -448,7 +458,7 @@ export class WebRTCManager {
 
     const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoTrack = this.screenStream
-      ? this.screenStream.getVideoTracks()[0]
+      ? this.screenStream.getVideoTracks().find((t) => t.readyState === 'live')
       : this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoStream = this.screenStream || this.localStream;
 
@@ -505,11 +515,11 @@ export class WebRTCManager {
       event.track.onended = () => {
         if (currentStream) {
           currentStream.removeTrack(event.track);
-          this.onRemoteStreamUpdate(targetPeerId, currentStream);
+          this.onRemoteStreamUpdate(targetPeerId, new MediaStream(currentStream.getTracks()));
         }
       };
 
-      this.onRemoteStreamUpdate(targetPeerId, currentStream);
+      this.onRemoteStreamUpdate(targetPeerId, new MediaStream(currentStream.getTracks()));
     };
 
     let restartAttempts = 0;
@@ -555,7 +565,7 @@ export class WebRTCManager {
             if (isCurrent() && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
               this.closePeer(targetPeerId);
             }
-          }, 5000);
+          }, 6000);
         }
         return;
       }
@@ -678,7 +688,9 @@ export class WebRTCManager {
       pc.onconnectionstatechange = null;
       pc.onicecandidate = null;
       pc.ontrack = null;
-      pc.close();
+      try {
+        pc.close();
+      } catch {}
       this.peerConnections.delete(peerId);
     }
     this.iceQueues.delete(peerId);
@@ -700,7 +712,9 @@ export class WebRTCManager {
     }
     this.audioAnalyser = null;
     if (this.audioContext) {
-      this.audioContext.close().catch(() => {});
+      try {
+        this.audioContext.close();
+      } catch {}
       this.audioContext = null;
     }
     if (this.localStream) {
