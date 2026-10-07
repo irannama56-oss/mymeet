@@ -24,6 +24,7 @@ import {
   ChatMessage,
   KnockRequest,
   SignalingMessage,
+  ScreenSharePreset,
   cleanRoomCode,
   isRoomCodeLike,
 } from './lib/types';
@@ -96,6 +97,15 @@ export const App: React.FC = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [screenSharePreset, setScreenSharePreset] = useState<ScreenSharePreset>(() => {
+    try {
+      const saved = localStorage.getItem('mymeet_screenshare_preset');
+      if (saved === 'balanced' || saved === 'high') return saved;
+      return 'low';
+    } catch {
+      return 'low';
+    }
+  });
   const [isNoiseCancellationEnabled, setIsNoiseCancellationEnabled] = useState(() => {
     try {
       return localStorage.getItem('mymeet_noise_cancellation') !== 'false';
@@ -733,6 +743,16 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const handleSelectScreenSharePreset = useCallback((preset: ScreenSharePreset) => {
+    setScreenSharePreset(preset);
+    try {
+      localStorage.setItem('mymeet_screenshare_preset', preset);
+    } catch {}
+    if (webrtcRef.current) {
+      webrtcRef.current.setScreenSharePreset(preset);
+    }
+  }, []);
+
   // Start or Join Flow from Lobby
   const handleJoinFromLobby = async (data: {
     name: string;
@@ -807,7 +827,8 @@ export const App: React.FC = () => {
       signaling,
       userId,
       handleRemoteStreamUpdate,
-      isNoiseCancellationEnabled
+      isNoiseCancellationEnabled,
+      screenSharePreset
     );
     webrtcRef.current = webrtc;
 
@@ -1423,6 +1444,8 @@ export const App: React.FC = () => {
         onDeviceChange={handleDeviceChange}
         isNoiseCancellationEnabled={isNoiseCancellationEnabled}
         onToggleNoiseCancellation={handleToggleNoiseCancellation}
+        screenSharePreset={screenSharePreset}
+        onSelectScreenSharePreset={handleSelectScreenSharePreset}
       />
     </div>
   );

@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { 
   X, Mic, Video, Database, CheckCircle2, AlertTriangle, 
-  Key, Globe, Shield, Volume2, Play, Keyboard, Sparkles
+  Key, Globe, Shield, Volume2, Play, Keyboard, Sparkles, Monitor, Zap
 } from 'lucide-react';
 import { getSupabaseCredentials, isSupabaseReady, resetSupabaseClient } from '../lib/supabase';
 import { sounds } from '../lib/sound';
+import { ScreenSharePreset } from '../lib/types';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -14,6 +15,8 @@ interface SettingsModalProps {
   onDeviceChange?: (audioId: string, videoId: string) => void;
   isNoiseCancellationEnabled?: boolean;
   onToggleNoiseCancellation?: (enabled: boolean) => void;
+  screenSharePreset?: ScreenSharePreset;
+  onSelectScreenSharePreset?: (preset: ScreenSharePreset) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -24,6 +27,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onDeviceChange,
   isNoiseCancellationEnabled = true,
   onToggleNoiseCancellation,
+  screenSharePreset = 'low',
+  onSelectScreenSharePreset,
 }) => {
   const [activeTab, setActiveTab] = useState<'audio' | 'video' | 'network' | 'shortcuts'>('audio');
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
@@ -303,6 +308,80 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* Screen Share Quality Preset */}
+              <div className="p-4 rounded-2xl bg-dark-900/90 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Monitor className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-semibold text-white">Screen Share Quality (مصرف اینترنت)</span>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/30">
+                    {screenSharePreset === 'low' ? 'Low Data (~200MB/h)' : screenSharePreset === 'high' ? 'High Quality (~1.2GB/h)' : 'Balanced (~500MB/h)'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {[
+                    {
+                      id: 'low',
+                      label: 'Low Data (متنی)',
+                      sub: '720p 15fps',
+                      usage: '~200 MB/h',
+                      icon: Zap,
+                      desc: 'کد، متون و اسلاید',
+                    },
+                    {
+                      id: 'balanced',
+                      label: 'Balanced (متعادل)',
+                      sub: '720p 30fps',
+                      usage: '~500 MB/h',
+                      icon: Monitor,
+                      desc: 'استفاده عمومی',
+                    },
+                    {
+                      id: 'high',
+                      label: 'High (کیفیت بالا)',
+                      sub: '1080p 30fps',
+                      usage: '~1.2 GB/h',
+                      icon: Sparkles,
+                      desc: 'ویدیو و انیمیشن',
+                    },
+                  ].map((p) => {
+                    const Icon = p.icon;
+                    const isSelected = screenSharePreset === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          sounds.playClick();
+                          onSelectScreenSharePreset?.(p.id as any);
+                        }}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? 'bg-indigo-600/20 border-indigo-500 text-white shadow-md'
+                            : 'bg-dark-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <Icon className={`w-4 h-4 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`} />
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                            isSelected ? 'bg-indigo-500/30 text-indigo-200' : 'bg-slate-800 text-slate-500'
+                          }`}>
+                            {p.sub}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold truncate">{p.label}</p>
+                          <p className="text-[10px] opacity-80 mt-0.5">{p.desc}</p>
+                          <p className="text-[10px] font-mono text-emerald-400 font-semibold mt-1">{p.usage}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Camera Live Test Preview */}

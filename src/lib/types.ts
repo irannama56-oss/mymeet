@@ -1,3 +1,5 @@
+export type ScreenSharePreset = 'low' | 'balanced' | 'high';
+
 export interface Participant {
   id: string;
   name: string;

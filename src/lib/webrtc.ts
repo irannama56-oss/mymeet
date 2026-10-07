@@ -1,4 +1,5 @@
 import { SignalingService } from './supabase';
+import { ScreenSharePreset } from './types';
 
 function createSyntheticStream(userName: string = 'User'): MediaStream {
   if (typeof document === 'undefined') return new MediaStream();
@@ -126,17 +127,56 @@ export class WebRTCManager {
   private onAudioLevelChange?: (level: number) => void;
   private onScreenShareEnded?: () => void;
   private isNoiseCancellationEnabled: boolean = true;
+  private screenSharePreset: ScreenSharePreset = 'low';
 
   constructor(
     signaling: SignalingService,
     myId: string,
     onRemoteStreamUpdate: (peerId: string, stream: MediaStream | null) => void,
-    noiseCancellation: boolean = true
+    noiseCancellation: boolean = true,
+    screenSharePreset: ScreenSharePreset = 'low'
   ) {
     this.signaling = signaling;
     this.myId = myId;
     this.onRemoteStreamUpdate = onRemoteStreamUpdate;
     this.isNoiseCancellationEnabled = noiseCancellation;
+    this.screenSharePreset = screenSharePreset;
+  }
+
+  public setScreenSharePreset(preset: ScreenSharePreset) {
+    this.screenSharePreset = preset;
+    this.peerConnections.forEach((pc) => {
+      this.applySenderParameters(pc);
+    });
+  }
+
+  public getScreenSharePreset(): ScreenSharePreset {
+    return this.screenSharePreset;
+  }
+
+  public applySenderParameters(pc: RTCPeerConnection) {
+    if (pc.signalingState === 'closed') return;
+    try {
+      pc.getSenders().forEach((sender) => {
+        if (!sender.track) return;
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        if (sender.track.kind === 'audio') {
+          // 32kbps Opus constraint for crystal clear voice + ultra-low data
+          params.encodings[0].maxBitrate = 32000;
+        } else if (sender.track.kind === 'video' && this.screenStream) {
+          const preset = this.screenSharePreset;
+          params.encodings[0].maxBitrate =
+            preset === 'low' ? 450000 : preset === 'high' ? 2500000 : 1200000;
+          params.encodings[0].maxFramerate = preset === 'low' ? 15 : 30;
+        }
+        sender.setParameters(params).catch(() => {});
+      });
+    } catch (e) {
+      console.warn('Error setting sender parameters:', e);
+    }
   }
 
   public setNoiseCancellation(enabled: boolean) {
@@ -422,10 +462,17 @@ export class WebRTCManager {
 
   public async startScreenShare(): Promise<MediaStream> {
     try {
+      const preset = this.screenSharePreset;
+      const frameRate = preset === 'low' ? { ideal: 15, max: 15 } : { ideal: 30, max: 30 };
+      const width = preset === 'high' ? { ideal: 1920 } : { ideal: 1280 };
+      const height = preset === 'high' ? { ideal: 1080 } : { ideal: 720 };
+
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           displaySurface: 'monitor',
-          frameRate: { ideal: 30 },
+          width,
+          height,
+          frameRate,
         },
         audio: true,
       });
@@ -443,6 +490,7 @@ export class WebRTCManager {
           } else {
             try { pc.addTrack(screenTrack, screenStream); } catch (e) {}
           }
+          this.applySenderParameters(pc);
         });
 
         screenTrack.onended = () => {
@@ -513,6 +561,8 @@ export class WebRTCManager {
     } catch (e) {
       console.warn('Could not add video to peer:', e);
     }
+
+    this.applySenderParameters(pc);
 
     // ICE Candidate Handler
     pc.onicecandidate = (event) => {
