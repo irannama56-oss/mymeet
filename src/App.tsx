@@ -8,8 +8,6 @@ import { ParticipantsDrawer } from './components/ParticipantsDrawer';
 import { GuestWaitingScreen, HostKnockBanner } from './components/KnockModal';
 import { SettingsModal } from './components/SettingsModal';
 import { MeetingHeader } from './components/MeetingHeader';
-import { AdminLogin } from './components/admin/AdminLogin';
-import { AdminDashboard } from './components/admin/AdminDashboard';
 import { WebRTCManager } from './lib/webrtc';
 import {
   SignalingService,
@@ -26,11 +24,9 @@ import {
   ChatMessage,
   KnockRequest,
   SignalingMessage,
-  AdminUser,
   cleanRoomCode,
   isRoomCodeLike,
 } from './lib/types';
-import { getStoredAdminSession, adminLogout } from './lib/adminAuth';
 import { sounds } from './lib/sound';
 import { RoomNotFoundModal } from './components/RoomNotFoundModal';
 import { ConnectionBanner } from './components/ConnectionBanner';
@@ -47,22 +43,10 @@ const AVATAR_COLORS = [
   'from-violet-500 to-fuchsia-600',
 ];
 
-const checkIsAdminPath = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const path = window.location.pathname.toLowerCase();
-  const search = window.location.search.toLowerCase();
-  return (
-    path.startsWith('/admin') ||
-    path.startsWith('/login') ||
-    search.includes('admin=true') ||
-    search.includes('login=true')
-  );
-};
-
 const getRoomSlugFromUrl = (): string => {
   if (typeof window === 'undefined') return '';
   const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '').trim().toLowerCase();
-  if (pathname && !pathname.includes('.') && isRoomCodeLike(pathname) && !pathname.startsWith('admin')) {
+  if (pathname && !pathname.includes('.') && isRoomCodeLike(pathname)) {
     return cleanRoomCode(pathname);
   }
   const params = new URLSearchParams(window.location.search);
@@ -74,15 +58,6 @@ const getRoomSlugFromUrl = (): string => {
 };
 
 export const App: React.FC = () => {
-  // Navigation & View Routing State
-  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => getStoredAdminSession());
-  const [currentView, setCurrentView] = useState<'lobby' | 'admin-login' | 'admin-dashboard'>(() => {
-    if (checkIsAdminPath()) {
-      return getStoredAdminSession() ? 'admin-dashboard' : 'admin-login';
-    }
-    return 'lobby';
-  });
-
   // Session & UI States
   const [inMeeting, setInMeeting] = useState(false);
   const [waitingStatus, setWaitingStatus] = useState<'none' | 'waiting' | 'declined'>('none');
@@ -173,17 +148,8 @@ export const App: React.FC = () => {
   // Browser history popstate handler
   useEffect(() => {
     const handlePopState = () => {
-      if (checkIsAdminPath()) {
-        const stored = getStoredAdminSession();
-        setAdminUser(stored);
-        setCurrentView(stored ? 'admin-dashboard' : 'admin-login');
-      } else {
-        const slug = getRoomSlugFromUrl();
-        setInitialRoomParam(slug);
-        if (!inMeetingRef.current) {
-          setCurrentView('lobby');
-        }
-      }
+      const slug = getRoomSlugFromUrl();
+      setInitialRoomParam(slug);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -464,17 +430,15 @@ export const App: React.FC = () => {
           const isNewPeer = !remoteParticipantsRef.current.some((p) => p.id === remoteP.id);
           lastSeenRef.current.set(remoteP.id, Date.now());
 
-          // Prevent duplicate host collision: Super Admin always retains host; else seniority rule
+          // Prevent duplicate host collision: seniority rule
           if (
             remoteP.isHost &&
             localParticipantRef.current.isHost &&
-            remoteP.id !== userId &&
-            !localParticipantRef.current.isSuperAdmin
+            remoteP.id !== userId
           ) {
             const remoteJoinedAt = remoteP.joinedAt || 0;
             const localJoinedAt = localParticipantRef.current.joinedAt || 0;
             const shouldYield =
-              remoteP.isSuperAdmin ||
               remoteJoinedAt < localJoinedAt ||
               (remoteJoinedAt === localJoinedAt && remoteP.id < userId);
 
@@ -596,22 +560,13 @@ export const App: React.FC = () => {
 
       // 12. Host kicked this user
       case 'host-kick':
-        if (msg.targetId === userId && !localParticipantRef.current.isSuperAdmin) {
+        if (msg.targetId === userId) {
           handleLeaveMeeting();
           setNotice({
             title: 'Removed from the meeting',
             message: 'The host removed you from this meeting.',
           });
         }
-        break;
-
-      // 13. Super Admin closed room
-      case 'admin-room-closed':
-        handleLeaveMeeting();
-        setNotice({
-          title: 'Meeting Terminated',
-          message: 'This meeting was closed by a Super Administrator.',
-        });
         break;
 
       default:
@@ -969,120 +924,6 @@ export const App: React.FC = () => {
     probeTimersRef.current.push(probeTimeout);
   };
 
-  // Join Room directly as Super Admin (unrestricted bypass, host privileges, golden badge)
-  const handleJoinAsSuperAdmin = async (roomCode: string) => {
-    const cleanId = cleanRoomCode(roomCode);
-    if (!cleanId) return;
-
-    setNotice(null);
-    setRoomId(cleanId);
-    roomIdRef.current = cleanId;
-    pendingRoomRef.current = cleanId;
-    setIsHost(true);
-    setIsRoomLocked(false);
-
-    const superAdminLocal: Participant = {
-      ...localParticipantRef.current,
-      name: 'Super Admin',
-      isHost: true,
-      isSuperAdmin: true,
-      role: 'superadmin',
-      avatarColor: 'from-amber-500 via-orange-600 to-indigo-700',
-      isAudioEnabled: true,
-      isVideoEnabled: true,
-      joinedAt: Date.now(),
-    };
-    setLocalParticipant(superAdminLocal);
-    localParticipantRef.current = superAdminLocal;
-
-    // Register / Update in Supabase
-    await dbJoinOrCreateRoom({
-      code: cleanId,
-      userId,
-      userName: 'Super Admin',
-      avatarColor: superAdminLocal.avatarColor,
-      isCreate: true,
-      requireApproval: false,
-    });
-
-    // Setup Signaling Channel
-    const signaling = new SignalingService(cleanId, userId);
-    signalingRef.current = signaling;
-    signaling.connect((msg) => signalingHandlerRef.current(msg));
-    signaling.onStatusChange(setRealtimeStatus);
-
-    signaling.onPresence((peerIds) => {
-      if (!inMeetingRef.current) return;
-      peerIds.forEach((peerId) => {
-        if (remoteParticipantsRef.current.some((p) => p.id === peerId)) return;
-        signaling.send({
-          type: 'state-update',
-          targetId: peerId,
-          payload: {
-            participant: localParticipantRef.current,
-            isRoomLocked: isRoomLockedRef.current,
-          },
-        });
-      });
-    });
-
-    // Setup WebRTC Manager
-    const webrtc = new WebRTCManager(
-      signaling,
-      userId,
-      handleRemoteStreamUpdate,
-      isNoiseCancellationEnabled
-    );
-    webrtcRef.current = webrtc;
-
-    webrtc.setScreenShareEndedCallback(() => {
-      setScreenStream(null);
-      setScreenSharingParticipantId(null);
-      setLocalParticipant((prev) => {
-        const reverted = { ...prev, isScreenSharing: false };
-        localParticipantRef.current = reverted;
-        broadcastMyState(reverted);
-        return reverted;
-      });
-    });
-
-    webrtc.setAudioLevelCallback((level) => {
-      const isVoiceDetected = level > 25 && localParticipantRef.current.isAudioEnabled;
-      if (isVoiceDetected) {
-        if (speakingTimeoutRef.current) {
-          clearTimeout(speakingTimeoutRef.current);
-          speakingTimeoutRef.current = null;
-        }
-        if (!localParticipantRef.current.isSpeaking) {
-          setLocalParticipant((prev) => {
-            const next = { ...prev, isSpeaking: true, audioLevel: level };
-            signaling.send({
-              type: 'state-update',
-              payload: { participant: next },
-            });
-            return next;
-          });
-        }
-      } else {
-        if (localParticipantRef.current.isSpeaking && !speakingTimeoutRef.current) {
-          speakingTimeoutRef.current = setTimeout(() => {
-            speakingTimeoutRef.current = null;
-            setLocalParticipant((prev) => {
-              const next = { ...prev, isSpeaking: false, audioLevel: 0 };
-              signaling.send({
-                type: 'state-update',
-                payload: { participant: next },
-              });
-              return next;
-            });
-          }, 350);
-        }
-      }
-    });
-
-    enterRoom();
-  };
-
   const handleCancelMissingRoom = () => {
     sounds.playClick();
     clearProbeTimers();
@@ -1221,7 +1062,6 @@ export const App: React.FC = () => {
       text,
       timestamp: Date.now(),
       isHost: localParticipant.isHost,
-      isSuperAdmin: Boolean(localParticipant.isSuperAdmin),
     };
     setChatMessages((prev) => [...prev, chatMsg]);
 
@@ -1427,55 +1267,6 @@ export const App: React.FC = () => {
     );
   }
 
-  // Admin Login View
-  if (!inMeeting && currentView === 'admin-login') {
-    return (
-      <AdminLogin
-        onSuccess={(admin) => {
-          setAdminUser(admin);
-          setCurrentView('admin-dashboard');
-          if (typeof window !== 'undefined') {
-            window.history.pushState({}, '', '/admin/dashboard');
-          }
-        }}
-        onBackToApp={() => {
-          sounds.playClick();
-          setCurrentView('lobby');
-          if (typeof window !== 'undefined') {
-            window.history.pushState({}, '', '/');
-          }
-        }}
-      />
-    );
-  }
-
-  // Admin Dashboard View
-  if (!inMeeting && currentView === 'admin-dashboard' && adminUser) {
-    return (
-      <AdminDashboard
-        admin={adminUser}
-        onLogout={() => {
-          adminLogout();
-          setAdminUser(null);
-          setCurrentView('admin-login');
-          if (typeof window !== 'undefined') {
-            window.history.pushState({}, '', '/admin');
-          }
-        }}
-        onJoinAsSuperAdmin={(code) => {
-          handleJoinAsSuperAdmin(code);
-        }}
-        onBackToApp={() => {
-          sounds.playClick();
-          setCurrentView('lobby');
-          if (typeof window !== 'undefined') {
-            window.history.pushState({}, '', '/');
-          }
-        }}
-      />
-    );
-  }
-
   // Lobby View
   if (!inMeeting) {
     return (
@@ -1483,14 +1274,6 @@ export const App: React.FC = () => {
         <Lobby
           onJoin={handleJoinFromLobby}
           initialRoomId={initialRoomParam}
-          onOpenAdmin={() => {
-            const stored = getStoredAdminSession();
-            setAdminUser(stored);
-            setCurrentView(stored ? 'admin-dashboard' : 'admin-login');
-            if (typeof window !== 'undefined') {
-              window.history.pushState({}, '', '/admin');
-            }
-          }}
         />
         {joinPhase === 'probing' && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-950/80 backdrop-blur-md animate-in fade-in duration-150">
@@ -1531,7 +1314,6 @@ export const App: React.FC = () => {
       <MeetingHeader
         roomId={roomId}
         isHost={isHost}
-        isSuperAdmin={Boolean(localParticipant.isSuperAdmin)}
         isRoomLocked={isRoomLocked}
         participantsCount={remoteParticipants.length + 1}
       />

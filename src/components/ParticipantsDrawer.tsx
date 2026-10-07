@@ -234,22 +234,15 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
 
           {filteredParticipants.map((p) => {
             const isMe = p.id === localParticipant.id;
-            const isSuper = Boolean(p.isSuperAdmin || p.role === 'superadmin');
 
             return (
               <div
                 key={p.id}
-                className={`flex items-center justify-between p-2.5 rounded-2xl border transition-all ${
-                  isSuper
-                    ? 'bg-amber-950/20 border-amber-500/30'
-                    : 'bg-slate-900/50 hover:bg-slate-800/60 border-slate-800/80'
-                }`}
+                className="flex items-center justify-between p-2.5 rounded-2xl border transition-all bg-slate-900/50 hover:bg-slate-800/60 border-slate-800/80"
               >
                 <div className="flex items-center space-x-2.5 min-w-0">
                   <div
-                    className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${
-                      isSuper ? 'from-amber-500 to-orange-600' : p.avatarColor
-                    } flex items-center justify-center text-xs font-bold text-white shadow-sm shrink-0`}
+                    className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${p.avatarColor} flex items-center justify-center text-xs font-bold text-white shadow-sm shrink-0`}
                   >
                     {p.name ? p.name.charAt(0).toUpperCase() : '?'}
                   </div>
@@ -259,15 +252,11 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
                         {p.name}
                       </span>
                       {isMe && <span className="text-[10px] text-indigo-400 font-normal">(You)</span>}
-                      {isSuper ? (
-                        <span title="Super Administrator" className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono text-[9px] font-bold border border-amber-500/30">
-                          ADMIN
-                        </span>
-                      ) : p.isHost ? (
+                      {p.isHost && (
                         <span title="Host">
                           <Crown className="w-3 h-3 text-amber-400 shrink-0" />
                         </span>
-                      ) : null}
+                      )}
                     </div>
                   </div>
                 </div>
@@ -293,8 +282,8 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
                     {p.isVideoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
                   </div>
 
-                  {/* Host Kick Option (Super Admins cannot be kicked) */}
-                  {isHost && !isMe && !isSuper && (
+                  {/* Host Kick Option */}
+                  {isHost && !isMe && (
                     confirmKickId === p.id ? (
                       <div className="flex items-center gap-1 ml-1 animate-in fade-in duration-100">
                         <button

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Video, VideoOff, Mic, MicOff, Lock, Unlock, 
   ArrowRight, Shield, Radio, Copy, Check, Settings,
-  Sparkles, RefreshCw, Volume2, KeyRound
+  Sparkles, RefreshCw, Volume2
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
 import { cleanRoomCode } from '../lib/types';
@@ -19,10 +19,9 @@ interface LobbyProps {
     requireHostApproval: boolean;
   }) => void;
   initialRoomId?: string;
-  onOpenAdmin?: () => void;
 }
 
-export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpenAdmin }) => {
+export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   const [name, setName] = useState(() => localStorage.getItem('aura_meet_username') || '');
   const [roomId, setRoomId] = useState(initialRoomId);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
@@ -243,20 +242,6 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpen
         </div>
 
         <div className="flex items-center space-x-2">
-          {onOpenAdmin && (
-            <button
-              onClick={() => {
-                sounds.playClick();
-                onOpenAdmin();
-              }}
-              className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
-              title="Super Admin Panel"
-            >
-              <KeyRound className="w-4 h-4 text-amber-400" />
-              <span className="hidden sm:inline">Admin Panel</span>
-            </button>
-          )}
-
           <button
             onClick={() => setIsSettingsOpen(true)}
             className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-white hover:border-slate-600 transition-all flex items-center gap-2 text-xs font-medium cursor-pointer"

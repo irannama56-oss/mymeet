@@ -3,8 +3,7 @@ export interface Participant {
   name: string;
   avatarColor: string;
   isHost: boolean;
-  isSuperAdmin?: boolean;
-  role?: 'superadmin' | 'host' | 'participant';
+  role?: 'host' | 'participant';
   isAudioEnabled: boolean;
   isVideoEnabled: boolean;
   isScreenSharing: boolean;
@@ -22,7 +21,6 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   isHost?: boolean;
-  isSuperAdmin?: boolean;
 }
 
 export interface KnockRequest {
@@ -48,37 +46,6 @@ export interface ReactionEvent {
   timestamp: number;
 }
 
-export interface AdminUser {
-  id: string;
-  email: string;
-  fullName: string;
-  role: 'superadmin' | 'admin' | 'moderator';
-  createdAt?: string;
-  lastLoginAt?: string;
-}
-
-export interface AdminRoomSummary {
-  id: string;
-  code: string;
-  hostId: string;
-  hostName: string;
-  isLocked: boolean;
-  status: 'active' | 'closed';
-  createdAt: string;
-  updatedAt: string;
-  endedAt?: string | null;
-  activeParticipantsCount: number;
-  totalParticipantsCount: number;
-}
-
-export interface AdminSystemStats {
-  totalRooms: number;
-  activeRooms: number;
-  closedRooms: number;
-  activeParticipants: number;
-  totalParticipants: number;
-}
-
 export type SignalingMessageType =
   | 'join-request'
   | 'join-approved'
@@ -96,15 +63,13 @@ export type SignalingMessageType =
   | 'hand-raise'
   | 'host-lock-toggle'
   | 'host-mute-all'
-  | 'host-kick'
-  | 'admin-room-closed';
+  | 'host-kick';
 
 export interface SignalingMessage {
   type: SignalingMessageType;
   roomId: string;
   senderId: string;
   senderName?: string;
-  isSuperAdmin?: boolean;
   targetId?: string;
   payload?: any;
 }
@@ -120,8 +85,7 @@ export function isRoomCodeLike(input: string): boolean {
   
   const reservedPaths = [
     'app', 'preview', 'assets', 'favicon', 'index', 'robots', 
-    'sitemap', 'api', 'login', 'signup', 'settings', 'dist', 'src',
-    'admin', 'dashboard'
+    'sitemap', 'api', 'login', 'signup', 'settings', 'dist', 'src'
   ];
   if (reservedPaths.includes(code)) return false;
   
