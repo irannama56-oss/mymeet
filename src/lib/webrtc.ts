@@ -2,30 +2,52 @@ import { SignalingService } from './supabase';
 import { ScreenSharePreset } from './types';
 
 /**
- * ICE configuration with reliable STUN and TURN relays
+ * High-availability STUN & TURN server configuration
  */
 function buildIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+        'stun:stun3.l.google.com:19302',
+        'stun:stun4.l.google.com:19302',
+      ],
+    },
+    {
+      urls: [
+        'stun:stun.cloudflare.com:3478',
+        'stun:stun.services.mozilla.com:3478',
+        'stun:stun.1und1.de:3478',
+      ],
+    },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: import.meta.env.VITE_TURN_USERNAME || 'openrelayproject',
+      credential: import.meta.env.VITE_TURN_CREDENTIAL || 'openrelayproject',
+    },
   ];
 
   const envTurnUrl = import.meta.env.VITE_TURN_URL;
-  const rawTurnUrls = (envTurnUrl || 'turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443,turns:openrelay.metered.ca:443?transport=tcp')
-    .split(',')
-    .map((s: string) => s.trim())
-    .filter(Boolean);
+  if (envTurnUrl) {
+    const rawTurnUrls = envTurnUrl
+      .split(',')
+      .map((s: string) => s.trim())
+      .filter(Boolean);
 
-  if (rawTurnUrls.length > 0) {
-    servers.push({
-      urls: rawTurnUrls.length === 1 ? rawTurnUrls[0] : rawTurnUrls,
-      username: import.meta.env.VITE_TURN_USERNAME || 'openrelayproject',
-      credential: import.meta.env.VITE_TURN_CREDENTIAL || 'openrelayproject',
-    });
+    if (rawTurnUrls.length > 0) {
+      servers.push({
+        urls: rawTurnUrls,
+        username: import.meta.env.VITE_TURN_USERNAME || 'openrelayproject',
+        credential: import.meta.env.VITE_TURN_CREDENTIAL || 'openrelayproject',
+      });
+    }
   }
 
   return servers;
@@ -38,13 +60,20 @@ const ICE_SERVERS: RTCConfiguration = {
   rtcpMuxPolicy: 'require',
 };
 
+interface PeerState {
+  pc: RTCPeerConnection;
+  isPolite: boolean;
+  makingOffer: boolean;
+  ignoreOffer: boolean;
+  isSettingRemoteAnswerPending: boolean;
+}
+
 export class WebRTCManager {
   private localStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
-  private peerConnections: Map<string, RTCPeerConnection> = new Map();
+  private peerStates: Map<string, PeerState> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
   private iceQueues: Map<string, RTCIceCandidateInit[]> = new Map();
-  private negotiating: Set<string> = new Set();
   private signaling: SignalingService;
   private myId: string;
   private onRemoteStreamUpdate: (peerId: string, stream: MediaStream | null) => void;
@@ -82,7 +111,7 @@ export class WebRTCManager {
         track.applyConstraints({ width, height, frameRate }).catch((e) => console.warn('Could not apply track constraints:', e));
       }
     }
-    this.peerConnections.forEach((pc) => {
+    this.peerStates.forEach(({ pc }) => {
       this.applySenderParameters(pc);
     });
   }
@@ -295,7 +324,6 @@ export class WebRTCManager {
 
   /**
    * Sync local audio/video/screen tracks to all peer connections.
-   * Matches senders and transceivers reliably by track kind without mid requirements.
    */
   public syncLocalTracksToPeers() {
     const micTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
@@ -305,7 +333,7 @@ export class WebRTCManager {
     const screenVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const activeVideoTrack = screenVideoTrack || camTrack;
 
-    this.peerConnections.forEach((pc) => {
+    this.peerStates.forEach(({ pc }) => {
       if (pc.signalingState === 'closed') return;
 
       // 1. Audio Transceiver / Sender
@@ -443,7 +471,7 @@ export class WebRTCManager {
 
       if (screenTrack) {
         // Replace the video track on all peer connections with screen track
-        this.peerConnections.forEach((pc) => {
+        this.peerStates.forEach(({ pc }) => {
           if (pc.signalingState === 'closed') return;
           const videoTransceiver = pc.getTransceivers().find(
             (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
@@ -479,26 +507,32 @@ export class WebRTCManager {
     this.syncLocalTracksToPeers();
   }
 
-  public createPeerConnection(targetPeerId: string, initiator: boolean): RTCPeerConnection {
-    if (this.peerConnections.has(targetPeerId)) {
-      const existing = this.peerConnections.get(targetPeerId)!;
-      if (existing.signalingState !== 'closed') {
-        const alreadyNegotiated =
-          Boolean(existing.currentRemoteDescription) ||
-          existing.connectionState === 'connected' ||
-          existing.connectionState === 'connecting';
-
-        if (initiator && existing.signalingState === 'stable' && !alreadyNegotiated && !this.negotiating.has(targetPeerId)) {
-          void this.initiateOffer(targetPeerId, existing);
-        }
-        return existing;
+  /**
+   * Get or create a peer state implementing W3C Perfect Negotiation
+   */
+  public getOrCreatePeer(targetPeerId: string): PeerState {
+    if (this.peerStates.has(targetPeerId)) {
+      const state = this.peerStates.get(targetPeerId)!;
+      if (state.pc.signalingState !== 'closed') {
+        return state;
       }
-      this.peerConnections.delete(targetPeerId);
+      this.peerStates.delete(targetPeerId);
     }
 
     const pc = new RTCPeerConnection(ICE_SERVERS);
-    this.peerConnections.set(targetPeerId, pc);
+    const isPolite = this.myId < targetPeerId;
 
+    const state: PeerState = {
+      pc,
+      isPolite,
+      makingOffer: false,
+      ignoreOffer: false,
+      isSettingRemoteAnswerPending: false,
+    };
+
+    this.peerStates.set(targetPeerId, state);
+
+    // Initial tracks / transceivers setup
     const audioTrack = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live') || null;
     const screenVideoTrack = this.screenStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
     const camVideoTrack = this.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null;
@@ -512,7 +546,7 @@ export class WebRTCManager {
         pc.addTransceiver('audio', { direction: 'sendrecv' });
       }
     } catch (e) {
-      console.warn('Could not add audio to peer:', e);
+      console.warn('Could not add audio transceiver:', e);
     }
 
     try {
@@ -522,12 +556,12 @@ export class WebRTCManager {
         pc.addTransceiver('video', { direction: 'sendrecv' });
       }
     } catch (e) {
-      console.warn('Could not add video to peer:', e);
+      console.warn('Could not add video transceiver:', e);
     }
 
     this.applySenderParameters(pc);
 
-    // ICE Candidate Handler
+    // ICE Candidate handler
     pc.onicecandidate = (event) => {
       if (event.candidate && event.candidate.candidate) {
         this.signaling.send({
@@ -542,10 +576,25 @@ export class WebRTCManager {
       }
     };
 
-    // Automatic renegotiation when tracks are added/removed
-    pc.onnegotiationneeded = () => {
-      if (!this.negotiating.has(targetPeerId) && pc.signalingState === 'stable') {
-        void this.initiateOffer(targetPeerId, pc, true);
+    // Perfect Negotiation onnegotiationneeded
+    pc.onnegotiationneeded = async () => {
+      try {
+        state.makingOffer = true;
+        const offer = await pc.createOffer();
+        if (pc.signalingState !== 'stable') return;
+        await pc.setLocalDescription(offer);
+        this.signaling.send({
+          type: 'offer',
+          targetId: targetPeerId,
+          payload: {
+            type: pc.localDescription?.type,
+            sdp: pc.localDescription?.sdp,
+          },
+        });
+      } catch (err) {
+        console.error(`[WebRTC] Perfect Negotiation error with ${targetPeerId}:`, err);
+      } finally {
+        state.makingOffer = false;
       }
     };
 
@@ -565,7 +614,6 @@ export class WebRTCManager {
       }
       this.remoteStreams.set(targetPeerId, currentStream);
 
-      // Create a fresh wrapper to ensure React components trigger state update
       const streamWrapper = new MediaStream(currentStream.getTracks());
 
       event.track.onended = () => {
@@ -582,15 +630,15 @@ export class WebRTCManager {
     let restartAttempts = 0;
     let disconnectTimer: any = null;
 
-    const isCurrent = () => this.peerConnections.get(targetPeerId) === pc;
+    const isCurrent = () => this.peerStates.get(targetPeerId)?.pc === pc;
 
     const handleConnectionDrop = () => {
       if (!isCurrent()) return;
-      const state = pc.connectionState;
+      const connState = pc.connectionState;
       const iceState = pc.iceConnectionState;
-      console.log(`[WebRTC] Peer ${targetPeerId} state - conn: ${state}, ice: ${iceState}`);
+      console.log(`[WebRTC] Peer ${targetPeerId} - conn: ${connState}, ice: ${iceState}`);
 
-      if (state === 'connected' || iceState === 'connected' || iceState === 'completed') {
+      if (connState === 'connected' || iceState === 'connected' || iceState === 'completed') {
         if (disconnectTimer !== null) {
           clearTimeout(disconnectTimer);
           disconnectTimer = null;
@@ -599,29 +647,25 @@ export class WebRTCManager {
         return;
       }
 
-      if (state === 'failed' || iceState === 'failed' || state === 'disconnected' || iceState === 'disconnected') {
+      if (connState === 'failed' || iceState === 'failed' || connState === 'disconnected' || iceState === 'disconnected') {
         if (restartAttempts < 3) {
           restartAttempts += 1;
           console.log(`[WebRTC] Attempting ICE restart for ${targetPeerId} (attempt ${restartAttempts})...`);
           try {
             pc.restartIce();
-            if (initiator || this.myId > targetPeerId) {
-              void this.initiateOffer(targetPeerId, pc, true);
-            }
           } catch (e) {
             console.warn('ICE restart trigger failed:', e);
           }
         }
 
         if (disconnectTimer === null) {
-          // Allow 15 seconds grace period for ICE restart & auto-reconnect before closing peer
           disconnectTimer = setTimeout(() => {
             disconnectTimer = null;
             if (isCurrent()) {
-              const currentConn = pc.connectionState;
-              const currentIce = pc.iceConnectionState;
-              if (currentConn === 'failed' || currentConn === 'disconnected' || currentIce === 'failed' || currentIce === 'disconnected') {
-                console.warn(`[WebRTC] Peer ${targetPeerId} failed to reconnect after 15s. Closing peer.`);
+              const curConn = pc.connectionState;
+              const curIce = pc.iceConnectionState;
+              if (curConn === 'failed' || curConn === 'disconnected' || curIce === 'failed' || curIce === 'disconnected') {
+                console.warn(`[WebRTC] Peer ${targetPeerId} disconnected after grace period.`);
                 this.closePeer(targetPeerId);
               }
             }
@@ -630,7 +674,7 @@ export class WebRTCManager {
         return;
       }
 
-      if (state === 'closed' || iceState === 'closed') {
+      if (connState === 'closed' || iceState === 'closed') {
         this.closePeer(targetPeerId);
       }
     };
@@ -638,49 +682,30 @@ export class WebRTCManager {
     pc.onconnectionstatechange = handleConnectionDrop;
     pc.oniceconnectionstatechange = handleConnectionDrop;
 
-    if (initiator) {
-      this.initiateOffer(targetPeerId, pc);
-    }
-
-    return pc;
+    return state;
   }
 
-  private async initiateOffer(targetPeerId: string, pc: RTCPeerConnection, force: boolean = false) {
-    if (this.negotiating.has(targetPeerId)) return;
-    this.negotiating.add(targetPeerId);
-    try {
-      if (pc.signalingState !== 'stable') return;
-      if (pc.currentRemoteDescription && !force) return;
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      });
-      await pc.setLocalDescription(offer);
-      this.signaling.send({
-        type: 'offer',
-        targetId: targetPeerId,
-        payload: {
-          type: offer.type,
-          sdp: offer.sdp,
-        },
-      });
-    } catch (err) {
-      console.error(`Error creating offer for ${targetPeerId}:`, err);
-    } finally {
-      this.negotiating.delete(targetPeerId);
-    }
+  public createPeerConnection(targetPeerId: string, initiator: boolean = false): RTCPeerConnection {
+    const state = this.getOrCreatePeer(targetPeerId);
+    return state.pc;
   }
 
   public async handleOffer(senderId: string, offer: RTCSessionDescriptionInit) {
     try {
-      const pc = this.createPeerConnection(senderId, false);
+      const state = this.getOrCreatePeer(senderId);
+      const { pc, isPolite } = state;
 
-      if (pc.signalingState !== 'stable') {
-        try {
-          await pc.setLocalDescription({ type: 'rollback' });
-        } catch (e) {
-          console.warn('Rollback warning:', e);
-        }
+      const offerCollision = state.makingOffer || pc.signalingState !== 'stable';
+      state.ignoreOffer = !isPolite && offerCollision;
+
+      if (state.ignoreOffer) {
+        console.warn(`[WebRTC] Collision: Impolite peer ${this.myId} ignoring colliding offer from ${senderId}`);
+        return;
+      }
+
+      if (offerCollision) {
+        console.log(`[WebRTC] Collision: Polite peer ${this.myId} rolling back local offer`);
+        await pc.setLocalDescription({ type: 'rollback' });
       }
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -698,27 +723,27 @@ export class WebRTCManager {
         },
       });
     } catch (err) {
-      console.error(`Error handling offer from ${senderId}:`, err);
+      console.error(`[WebRTC] Error handling offer from ${senderId}:`, err);
     }
   }
 
   public async handleAnswer(senderId: string, answer: RTCSessionDescriptionInit) {
     try {
-      const pc = this.peerConnections.get(senderId);
-      if (pc && pc.signalingState !== 'closed') {
-        if (pc.signalingState === 'have-local-offer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          this.drainIceQueue(senderId, pc);
-        }
+      const state = this.peerStates.get(senderId);
+      if (!state || state.ignoreOffer) return;
+      const pc = state.pc;
+      if (pc.signalingState === 'have-local-offer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        this.drainIceQueue(senderId, pc);
       }
     } catch (err) {
-      console.error(`Error handling answer from ${senderId}:`, err);
+      console.error(`[WebRTC] Error handling answer from ${senderId}:`, err);
     }
   }
 
   public async handleIceCandidate(senderId: string, candidate: RTCIceCandidateInit) {
-    const pc = this.peerConnections.get(senderId);
-    if (!pc || !pc.remoteDescription || !pc.remoteDescription.type) {
+    const state = this.peerStates.get(senderId);
+    if (!state || !state.pc.remoteDescription || !state.pc.remoteDescription.type) {
       if (!this.iceQueues.has(senderId)) {
         this.iceQueues.set(senderId, []);
       }
@@ -727,9 +752,11 @@ export class WebRTCManager {
     }
 
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      await state.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
-      console.error(`Error adding ice candidate for ${senderId}:`, err);
+      if (!state.ignoreOffer) {
+        console.error(`[WebRTC] Error adding ice candidate for ${senderId}:`, err);
+      }
     }
   }
 
@@ -738,7 +765,7 @@ export class WebRTCManager {
     if (queue && queue.length > 0) {
       queue.forEach((candidate) => {
         pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) => {
-          console.warn(`Error draining ice candidate for ${peerId}:`, err);
+          console.warn(`[WebRTC] Error draining ice candidate for ${peerId}:`, err);
         });
       });
       this.iceQueues.delete(peerId);
@@ -746,8 +773,9 @@ export class WebRTCManager {
   }
 
   public closePeer(peerId: string) {
-    const pc = this.peerConnections.get(peerId);
-    if (pc) {
+    const state = this.peerStates.get(peerId);
+    if (state) {
+      const pc = state.pc;
       pc.onconnectionstatechange = null;
       pc.oniceconnectionstatechange = null;
       pc.onicecandidate = null;
@@ -756,11 +784,10 @@ export class WebRTCManager {
       try {
         pc.close();
       } catch {}
-      this.peerConnections.delete(peerId);
+      this.peerStates.delete(peerId);
     }
     this.iceQueues.delete(peerId);
     this.remoteStreams.delete(peerId);
-    this.negotiating.delete(peerId);
     this.onRemoteStreamUpdate(peerId, null);
   }
 
@@ -790,14 +817,13 @@ export class WebRTCManager {
       this.screenStream.getTracks().forEach((t) => t.stop());
       this.screenStream = null;
     }
-    this.peerConnections.forEach((pc) => {
+    this.peerStates.forEach(({ pc }) => {
       try {
         pc.close();
       } catch {}
     });
-    this.peerConnections.clear();
+    this.peerStates.clear();
     this.iceQueues.clear();
     this.remoteStreams.clear();
-    this.negotiating.clear();
   }
 }

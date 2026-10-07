@@ -59,6 +59,44 @@ const getRoomSlugFromUrl = (): string => {
   return '';
 };
 
+// Root-Level Audio Renderer for remote participants to prevent audio interruption
+const GlobalRemoteAudio: React.FC<{ peerId: string; stream: MediaStream | null }> = ({ peerId, stream }) => {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !stream) return;
+
+    el.volume = 1.0;
+    el.muted = false;
+
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+
+    const tryPlay = () => {
+      if (!el) return;
+      el.play().catch((err) => {
+        console.warn(`[Audio] Autoplay blocked for peer ${peerId}:`, err);
+        const resume = () => {
+          if (el) {
+            el.volume = 1.0;
+            el.muted = false;
+            el.play().catch(() => {});
+          }
+        };
+        window.addEventListener('click', resume, { once: true });
+        window.addEventListener('touchstart', resume, { once: true });
+        window.addEventListener('keydown', resume, { once: true });
+      });
+    };
+
+    tryPlay();
+  }, [stream, peerId]);
+
+  return <audio ref={audioRef} autoPlay playsInline />;
+};
+
 export const App: React.FC = () => {
   // Session & UI States
   const [inMeeting, setInMeeting] = useState(false);
@@ -1454,6 +1492,17 @@ export const App: React.FC = () => {
           {item.emoji}
         </div>
       ))}
+
+      {/* Dedicated Root-Level Audio Engines for Remote Peers */}
+      <div className="hidden pointer-events-none" aria-hidden="true">
+        {remoteParticipants.map((p) => (
+          <GlobalRemoteAudio
+            key={p.id}
+            peerId={p.id}
+            stream={remoteStreams.get(p.id) || null}
+          />
+        ))}
+      </div>
 
       {/* Center: Main Video Grid & Spotlight Area */}
       <main className="flex-1 w-full h-full pt-16 pb-24 px-2 sm:px-4 flex items-center justify-center overflow-hidden">
