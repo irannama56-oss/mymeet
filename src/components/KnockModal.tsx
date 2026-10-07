@@ -91,30 +91,30 @@ export const HostKnockBanner: React.FC<HostKnockBannerProps> = ({
   const currentKnock = knockRequests[0];
 
   return (
-    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4 animate-in slide-in-from-top duration-300">
-      <div className="p-4 rounded-3xl glass-dock border border-amber-500/40 shadow-2xl bg-dark-900/95 flex items-center justify-between gap-3">
-        <div className="flex items-center space-x-3 min-w-0">
+    <div className="fixed top-20 left-3 right-3 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-50 sm:w-full sm:max-w-md sm:px-4 animate-in slide-in-from-top duration-300">
+      <div className="p-3 sm:p-4 rounded-3xl glass-dock border border-amber-500/40 shadow-2xl bg-dark-900/95 flex items-center justify-between gap-2 sm:gap-3">
+        <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
           <div
-            className={`w-10 h-10 rounded-2xl bg-gradient-to-tr ${currentKnock.avatarColor} flex items-center justify-center text-sm font-bold text-white shadow-md shrink-0 border border-white/10`}
+            className={`w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-tr ${currentKnock.avatarColor} flex items-center justify-center text-sm font-bold text-white shadow-md shrink-0 border border-white/10`}
           >
             {currentKnock.name.charAt(0).toUpperCase()}
           </div>
           <div className="min-w-0">
             <p className="text-xs font-bold text-white truncate">{currentKnock.name}</p>
-            <p className="text-[11px] text-amber-400 font-medium">Knocking to join the call</p>
+            <p className="text-[11px] text-amber-400 font-medium truncate">Knocking to join the call</p>
           </div>
         </div>
 
-        <div className="flex items-center space-x-2 shrink-0">
+        <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
           <button
             onClick={() => onDecline(currentKnock.id)}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 text-slate-300 text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
+            className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 text-slate-300 text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
           >
             Deny
           </button>
           <button
             onClick={() => onAdmit(currentKnock)}
-            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
           >
             Admit
           </button>

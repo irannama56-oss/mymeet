@@ -183,12 +183,12 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
         </div>
 
         {showReactions && (
-          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 p-2.5 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex items-center gap-1.5 animate-in fade-in zoom-in-95 duration-150">
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 p-2 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex items-center gap-1 animate-in fade-in zoom-in-95 duration-150 max-w-[92vw] overflow-x-auto">
             {EMOJIS.map((emoji) => (
               <button
                 key={emoji}
                 onClick={() => handleReactionClick(emoji)}
-                className="w-10 h-10 flex items-center justify-center text-xl hover:scale-125 hover:bg-white/10 rounded-xl transition-all cursor-pointer"
+                className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-xl hover:scale-125 hover:bg-white/10 rounded-xl transition-all cursor-pointer shrink-0"
               >
                 {emoji}
               </button>

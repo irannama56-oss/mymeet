@@ -73,19 +73,19 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
       className="fixed top-0 right-0 h-full w-full sm:w-96 z-50 glass-panel border-l border-slate-700/60 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 select-none"
     >
       {/* Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center space-x-2.5">
-          <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+      <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div className="flex items-center space-x-2.5 min-w-0">
+          <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
             <MessageSquare className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="font-semibold text-white text-sm">In-Call Messages</h2>
-            <p className="text-[11px] text-slate-400">Direct peer communication</p>
+          <div className="min-w-0">
+            <h2 className="font-semibold text-white text-sm truncate">In-Call Messages</h2>
+            <p className="text-[11px] text-slate-400 truncate">Direct peer communication</p>
           </div>
         </div>
         <button
           onClick={onClose}
-          className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-all cursor-pointer"
+          className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-all cursor-pointer shrink-0"
           aria-label="Close Chat"
         >
           <X className="w-5 h-5" />

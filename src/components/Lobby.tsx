@@ -225,7 +225,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
       <div className="absolute top-1/2 right-1/3 w-80 h-80 bg-cyan-600/10 rounded-full blur-[120px] pointer-events-none -z-10" />
 
       {/* Top Navbar */}
-      <header className="absolute top-6 left-6 right-6 flex items-center justify-between max-w-6xl mx-auto z-20">
+      <header className="absolute top-4 sm:top-6 left-4 sm:left-6 right-4 sm:right-6 flex items-center justify-between z-20">
         <div className="flex items-center space-x-3">
           <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/25 border border-indigo-400/30">
             <Radio className="w-5 h-5 text-white" />
@@ -328,37 +328,45 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
           {/* Device Quick Pickers Bar */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Mic selector */}
-            <div className="flex items-center space-x-2 px-3.5 py-2.5 rounded-2xl glass-card border border-slate-800">
+            <div className="flex items-center space-x-2 px-3.5 py-2.5 rounded-2xl glass-card border border-slate-800 min-w-0">
               <Mic className="w-4 h-4 text-indigo-400 shrink-0" />
-              <select
-                value={selectedAudioId}
-                onChange={(e) => setSelectedAudioId(e.target.value)}
-                className="w-full bg-transparent text-xs text-slate-300 focus:outline-none cursor-pointer truncate"
-              >
-                <option value="" className="bg-dark-900 text-white">Default Microphone</option>
-                {audioDevices.map((dev) => (
-                  <option key={dev.deviceId} value={dev.deviceId} className="bg-dark-900 text-white">
-                    {dev.label || `Mic (${dev.deviceId.slice(0, 8)}...)`}
-                  </option>
-                ))}
-              </select>
+              <div className="flex-1 min-w-0 relative">
+                <select
+                  value={selectedAudioId}
+                  onChange={(e) => setSelectedAudioId(e.target.value)}
+                  className="w-full bg-transparent text-xs text-slate-300 focus:outline-none cursor-pointer appearance-none pr-4"
+                  style={{ textOverflow: 'ellipsis' }}
+                >
+                  <option value="" className="bg-dark-900 text-white">Default Microphone</option>
+                  {audioDevices.map((dev) => (
+                    <option key={dev.deviceId} value={dev.deviceId} className="bg-dark-900 text-white">
+                      {dev.label || `Mic (${dev.deviceId.slice(0, 8)}...)`}
+                    </option>
+                  ))}
+                </select>
+                <svg className="w-3 h-3 text-slate-500 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
             </div>
 
             {/* Camera selector */}
-            <div className="flex items-center space-x-2 px-3.5 py-2.5 rounded-2xl glass-card border border-slate-800">
+            <div className="flex items-center space-x-2 px-3.5 py-2.5 rounded-2xl glass-card border border-slate-800 min-w-0">
               <Video className="w-4 h-4 text-indigo-400 shrink-0" />
-              <select
-                value={selectedVideoId}
-                onChange={(e) => setSelectedVideoId(e.target.value)}
-                className="w-full bg-transparent text-xs text-slate-300 focus:outline-none cursor-pointer truncate"
-              >
-                <option value="" className="bg-dark-900 text-white">Default Camera</option>
-                {videoDevices.map((dev) => (
-                  <option key={dev.deviceId} value={dev.deviceId} className="bg-dark-900 text-white">
-                    {dev.label || `Cam (${dev.deviceId.slice(0, 8)}...)`}
-                  </option>
-                ))}
-              </select>
+              <div className="flex-1 min-w-0 relative">
+                <select
+                  value={selectedVideoId}
+                  onChange={(e) => setSelectedVideoId(e.target.value)}
+                  className="w-full bg-transparent text-xs text-slate-300 focus:outline-none cursor-pointer appearance-none pr-4"
+                  style={{ textOverflow: 'ellipsis' }}
+                >
+                  <option value="" className="bg-dark-900 text-white">Default Camera</option>
+                  {videoDevices.map((dev) => (
+                    <option key={dev.deviceId} value={dev.deviceId} className="bg-dark-900 text-white">
+                      {dev.label || `Cam (${dev.deviceId.slice(0, 8)}...)`}
+                    </option>
+                  ))}
+                </select>
+                <svg className="w-3 h-3 text-slate-500 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
             </div>
           </div>
         </div>
@@ -368,7 +376,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
           <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-slate-700/60 shadow-2xl relative">
             
             {/* Tab switch */}
-            <div className="flex p-1.5 bg-dark-950/90 rounded-2xl border border-slate-800/90 mb-6">
+            <div className="flex p-1.5 bg-dark-950/90 rounded-2xl border border-slate-800/90 mb-6 gap-1">
               <button
                 type="button"
                 onClick={() => {
@@ -376,7 +384,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                   setIsCreatingNew(true);
                   if (!roomId || !roomId.includes('-')) setRoomId(generateRoomCode());
                 }}
-                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all cursor-pointer ${
+                className={`flex-1 min-w-0 py-2.5 px-2 text-[11px] sm:text-xs font-semibold rounded-xl transition-all cursor-pointer truncate ${
                   isCreatingNew
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                     : 'text-slate-400 hover:text-white'
@@ -391,7 +399,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                   setIsCreatingNew(false);
                   setRoomId(initialRoomId || '');
                 }}
-                className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all cursor-pointer ${
+                className={`flex-1 min-w-0 py-2.5 px-2 text-[11px] sm:text-xs font-semibold rounded-xl transition-all cursor-pointer truncate ${
                   !isCreatingNew
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                     : 'text-slate-400 hover:text-white'

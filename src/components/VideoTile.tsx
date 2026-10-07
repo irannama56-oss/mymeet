@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { 
-  MicOff, VideoOff, Crown, Hand, Maximize2, Minimize2, 
-  Pin, PinOff, Monitor, PictureInPicture, Shield
+import {
+  MicOff, VideoOff, Crown, Hand, Maximize2, Minimize2,
+  Pin, PinOff, Monitor, PictureInPicture
 } from 'lucide-react';
 import { Participant } from '../lib/types';
 
@@ -66,49 +66,29 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     }
   }, [stream, hasActiveVideo, trackCount]);
 
-  // Keep audio srcObject in sync
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el || isLocal || disableAudio) return;
-    if (stream) {
-      if (el.srcObject !== stream) {
-        el.srcObject = stream;
-      }
-      el.play().catch(() => {});
-    } else {
-      el.srcObject = null;
-    }
-  }, [stream, isLocal, disableAudio, trackCount]);
-
-  const attachVideo = useCallback(
-    (el: HTMLVideoElement | null) => {
-      videoRef.current = el;
-      if (el && stream) {
-        el.srcObject = stream;
-        el.play().catch(() => {});
-      }
-    },
-    [stream]
-  );
-
   const attachAudio = useCallback(
     (el: HTMLAudioElement | null) => {
       audioRef.current = el;
-      if (el && stream) {
-        el.srcObject = stream;
+      if (el && stream && !isLocal && !disableAudio) {
+        if (el.srcObject !== stream) {
+          el.srcObject = stream;
+        }
       }
     },
-    [stream]
+    [stream, isLocal, disableAudio]
   );
 
-  // Remote audio playback management with user gesture fallback
+  // Remote audio playback management with user gesture fallback for autoplay blocks
   useEffect(() => {
     if (isLocal || disableAudio || !stream) return;
     const el = audioRef.current;
     if (!el) return;
 
-    let cancelled = false;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
 
+    let cancelled = false;
     const playAudio = () => {
       if (cancelled || !el) return;
       const p = el.play();
@@ -129,7 +109,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [stream, isLocal, disableAudio]);
+  }, [stream, isLocal, disableAudio, trackCount]);
 
   // Fullscreen state listener
   useEffect(() => {
@@ -183,23 +163,23 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     >
       {/* Remote Audio Element */}
       {!isLocal && !disableAudio && (
-        <audio 
-          ref={attachAudio} 
-          autoPlay 
-          playsInline 
-          onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})} 
-        />
+        <audio ref={attachAudio} autoPlay playsInline />
       )}
 
       {/* Video Element */}
       {hasActiveVideo ? (
         <video
-          ref={attachVideo}
+          ref={(el) => {
+            videoRef.current = el;
+            if (el && stream && el.srcObject !== stream) {
+              el.srcObject = stream;
+              el.play().catch(() => {});
+            }
+          }}
           autoPlay
           playsInline
           muted={isLocal}
-          onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
-          className={`w-full h-full object-contain bg-black/50 transition-all duration-300 ${
+          className={`w-full h-full bg-black/50 transition-all duration-300 ${
             isLocal && !isScreenShareTile && !participant.isScreenSharing
               ? '-scale-x-100 object-cover'
               : 'object-contain'
@@ -231,21 +211,23 @@ export const VideoTile: React.FC<VideoTileProps> = ({
         </div>
       )}
 
-      {/* Hand Raised Banner */}
-      {participant.isHandRaised && (
-        <div className="absolute top-3.5 left-3.5 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-dark-950 font-bold text-xs shadow-xl shadow-amber-500/30 animate-bounce">
-          <Hand className="w-3.5 h-3.5 fill-current" />
-          <span>Hand Raised</span>
-        </div>
-      )}
-
-      {/* Screen Sharing Badge */}
-      {(isScreenShareTile || participant.isScreenSharing) && (
-        <div className="absolute top-3.5 left-3.5 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-600/95 text-white font-medium text-xs shadow-xl backdrop-blur-md border border-indigo-400/30">
-          <Monitor className="w-3.5 h-3.5" />
-          <span>{participant.name}'s Screen</span>
-        </div>
-      )}
+      {/* Top-left status badges (stacked so they never overlap) */}
+      <div className="absolute top-3 left-3 z-10 flex flex-col gap-1.5 items-start pointer-events-none">
+        {participant.isHandRaised && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500 text-dark-950 font-bold text-xs shadow-xl shadow-amber-500/30 animate-bounce">
+            <Hand className="w-3 h-3 fill-current" />
+            <span className="hidden sm:inline">Hand Raised</span>
+            <span className="sm:hidden">✋</span>
+          </div>
+        )}
+        {(isScreenShareTile || participant.isScreenSharing) && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-600/95 text-white font-medium text-xs shadow-xl backdrop-blur-md border border-indigo-400/30">
+            <Monitor className="w-3 h-3" />
+            <span className="hidden sm:inline">{participant.name}'s Screen</span>
+            <span className="sm:hidden">Screen</span>
+          </div>
+        )}
+      </div>
 
       {/* Top right action buttons overlay */}
       <div className="absolute top-3 right-3 flex items-center space-x-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">

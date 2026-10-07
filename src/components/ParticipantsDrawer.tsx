@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  X, Users, Crown, Mic, MicOff, Video, VideoOff, 
-  Hand, UserX, Lock, Unlock, Copy, Check, ShieldCheck, 
-  UserPlus, CheckCircle2, XCircle, Search, VolumeX, Shield
+import {
+  X, Users, Crown, Mic, MicOff, Video, VideoOff,
+  Hand, UserX, Lock, Unlock, Copy, Check, ShieldCheck,
+  UserPlus, CheckCircle2, XCircle, Search
 } from 'lucide-react';
 import { Participant, KnockRequest } from '../lib/types';
 import { sounds } from '../lib/sound';
@@ -79,21 +79,21 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
       className="fixed top-0 right-0 h-full w-full sm:w-96 z-50 glass-panel border-l border-slate-700/60 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 select-none"
     >
       {/* Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center space-x-2.5">
-          <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+      <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div className="flex items-center space-x-2.5 min-w-0">
+          <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
             <Users className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="font-semibold text-white text-sm">
+          <div className="min-w-0">
+            <h2 className="font-semibold text-white text-sm truncate">
               People ({allParticipants.length})
             </h2>
-            <p className="text-[11px] text-slate-400">Manage participants & room access</p>
+            <p className="text-[11px] text-slate-400 truncate">Manage participants & room access</p>
           </div>
         </div>
         <button
           onClick={onClose}
-          className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-all cursor-pointer"
+          className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-all cursor-pointer shrink-0"
           aria-label="Close Participants Drawer"
         >
           <X className="w-5 h-5" />
@@ -176,20 +176,20 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
               {knockRequests.map((knock) => (
                 <div
                   key={knock.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-dark-950/70 border border-slate-800"
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-dark-950/70 border border-slate-800"
                 >
-                  <div className="flex items-center space-x-2.5 min-w-0">
+                  <div className="flex items-center space-x-2.5 min-w-0 flex-1">
                     <div
                       className={`w-7 h-7 rounded-lg bg-gradient-to-tr ${knock.avatarColor} flex items-center justify-center text-xs font-bold text-white shadow-sm shrink-0`}
                     >
                       {knock.name.charAt(0).toUpperCase()}
                     </div>
-                    <span className="text-xs font-medium text-white truncate max-w-[110px]">
+                    <span className="text-xs font-medium text-white truncate min-w-0">
                       {knock.name}
                     </span>
                   </div>
 
-                  <div className="flex items-center space-x-1.5">
+                  <div className="flex items-center space-x-1.5 shrink-0">
                     <button
                       onClick={() => onAdmitKnock(knock)}
                       className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-all cursor-pointer shadow-sm"
@@ -238,20 +238,20 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
             return (
               <div
                 key={p.id}
-                className="flex items-center justify-between p-2.5 rounded-2xl border transition-all bg-slate-900/50 hover:bg-slate-800/60 border-slate-800/80"
+                className="flex items-center justify-between gap-2 p-2.5 rounded-2xl border transition-all bg-slate-900/50 hover:bg-slate-800/60 border-slate-800/80"
               >
-                <div className="flex items-center space-x-2.5 min-w-0">
+                <div className="flex items-center space-x-2.5 min-w-0 flex-1">
                   <div
                     className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${p.avatarColor} flex items-center justify-center text-xs font-bold text-white shadow-sm shrink-0`}
                   >
                     {p.name ? p.name.charAt(0).toUpperCase() : '?'}
                   </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center space-x-1.5">
-                      <span className="text-xs font-medium text-white truncate max-w-[120px]">
-                        {p.name}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center space-x-1.5 min-w-0">
+                      <span className="text-xs font-medium text-white truncate min-w-0">
+                        {p.name || 'Unnamed'}
                       </span>
-                      {isMe && <span className="text-[10px] text-indigo-400 font-normal">(You)</span>}
+                      {isMe && <span className="text-[10px] text-indigo-400 font-normal shrink-0">(You)</span>}
                       {p.isHost && (
                         <span title="Host">
                           <Crown className="w-3 h-3 text-amber-400 shrink-0" />

@@ -32,15 +32,30 @@ export const ConnectionBanner: React.FC<ConnectionBannerProps> = ({ status }) =>
 
   if (status === 'connected') {
     return (
-      <div className="flex items-center justify-between p-2.5 px-3.5 rounded-2xl bg-emerald-950/30 border border-emerald-500/25 text-emerald-300 shadow-sm text-xs animate-in fade-in duration-150">
-        <div className="flex items-center space-x-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="font-semibold text-emerald-200">Cloud Realtime Connected</span>
+      <div className="flex items-center justify-between p-2.5 px-3.5 rounded-2xl bg-emerald-950/30 border border-emerald-500/25 text-emerald-300 shadow-sm text-xs animate-in fade-in duration-150 gap-2">
+        <div className="flex items-center space-x-2 min-w-0">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="font-semibold text-emerald-200 truncate">Cloud Realtime Connected</span>
         </div>
-        <span className="text-[11px] text-emerald-400/80 font-mono">P2P Mesh + Supabase</span>
+        <span className="text-[11px] text-emerald-400/80 font-mono shrink-0">P2P + Supabase</span>
       </div>
     );
   }
 
-  return null;
+  // Connecting / disabled
+  if (status === 'disabled') {
+    return (
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-slate-800/60 border border-slate-700/60 text-slate-300 shadow-sm animate-in fade-in duration-150">
+        <Cloud className="w-4 h-4 shrink-0 text-slate-400" />
+        <p className="text-xs font-medium">Cloud signaling disabled — local mesh active</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-indigo-950/30 border border-indigo-500/20 text-indigo-200 shadow-sm animate-in fade-in duration-150">
+      <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-indigo-400" />
+      <p className="text-xs font-medium">Connecting to cloud realtime…</p>
+    </div>
+  );
 };
