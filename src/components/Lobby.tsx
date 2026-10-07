@@ -92,6 +92,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpen
 
     async function initPreview() {
       try {
+        const isNcEnabled = localStorage.getItem('mymeet_noise_cancellation') !== 'false';
         const constraints: MediaStreamConstraints = {
           video: isVideoEnabled
             ? selectedVideoId
@@ -100,8 +101,8 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', onOpen
             : false,
           audio: isAudioEnabled
             ? selectedAudioId
-              ? { deviceId: { exact: selectedAudioId }, echoCancellation: true }
-              : { echoCancellation: true }
+              ? { deviceId: { exact: selectedAudioId }, echoCancellation: isNcEnabled, noiseSuppression: isNcEnabled, autoGainControl: isNcEnabled }
+              : { echoCancellation: isNcEnabled, noiseSuppression: isNcEnabled, autoGainControl: isNcEnabled }
             : false,
         };
 

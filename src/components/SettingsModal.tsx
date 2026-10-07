@@ -12,6 +12,8 @@ interface SettingsModalProps {
   selectedAudioInput?: string;
   selectedVideoInput?: string;
   onDeviceChange?: (audioId: string, videoId: string) => void;
+  isNoiseCancellationEnabled?: boolean;
+  onToggleNoiseCancellation?: (enabled: boolean) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -20,6 +22,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   selectedAudioInput,
   selectedVideoInput,
   onDeviceChange,
+  isNoiseCancellationEnabled = true,
+  onToggleNoiseCancellation,
 }) => {
   const [activeTab, setActiveTab] = useState<'audio' | 'video' | 'network' | 'shortcuts'>('audio');
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
@@ -208,6 +212,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* Noise Cancellation Toggle */}
+              <div className="p-4 rounded-2xl bg-dark-900/90 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2.5">
+                    <div className={`p-2 rounded-xl border ${
+                      isNoiseCancellationEnabled
+                        ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <p className="text-xs font-semibold text-white">AI Noise Cancellation</p>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                          isNoiseCancellationEnabled
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                            : 'bg-slate-800 text-slate-400 border-slate-700'
+                        }`}>
+                          {isNoiseCancellationEnabled ? 'ACTIVE' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Filters out background noise, keyboard clicks & room echo
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sounds.playClick();
+                      onToggleNoiseCancellation?.(!isNoiseCancellationEnabled);
+                    }}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      isNoiseCancellationEnabled ? 'bg-indigo-600' : 'bg-slate-700'
+                    }`}
+                    role="switch"
+                    aria-checked={isNoiseCancellationEnabled}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        isNoiseCancellationEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
 
               {/* Speaker Test */}

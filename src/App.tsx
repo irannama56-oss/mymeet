@@ -121,6 +121,13 @@ export const App: React.FC = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isNoiseCancellationEnabled, setIsNoiseCancellationEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('mymeet_noise_cancellation') !== 'false';
+    } catch {
+      return true;
+    }
+  });
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [knockRequests, setKnockRequests] = useState<KnockRequest[]>([]);
@@ -761,6 +768,16 @@ export const App: React.FC = () => {
     emojiTimersRef.current.push(timer);
   };
 
+  const handleToggleNoiseCancellation = useCallback((enabled: boolean) => {
+    setIsNoiseCancellationEnabled(enabled);
+    try {
+      localStorage.setItem('mymeet_noise_cancellation', String(enabled));
+    } catch {}
+    if (webrtcRef.current) {
+      webrtcRef.current.setNoiseCancellation(enabled);
+    }
+  }, []);
+
   // Start or Join Flow from Lobby
   const handleJoinFromLobby = async (data: {
     name: string;
@@ -831,7 +848,12 @@ export const App: React.FC = () => {
     });
 
     // Setup WebRTC Manager
-    const webrtc = new WebRTCManager(signaling, userId, handleRemoteStreamUpdate);
+    const webrtc = new WebRTCManager(
+      signaling,
+      userId,
+      handleRemoteStreamUpdate,
+      isNoiseCancellationEnabled
+    );
     webrtcRef.current = webrtc;
 
     // Handle screen share ended
@@ -1005,7 +1027,12 @@ export const App: React.FC = () => {
     });
 
     // Setup WebRTC Manager
-    const webrtc = new WebRTCManager(signaling, userId, handleRemoteStreamUpdate);
+    const webrtc = new WebRTCManager(
+      signaling,
+      userId,
+      handleRemoteStreamUpdate,
+      isNoiseCancellationEnabled
+    );
     webrtcRef.current = webrtc;
 
     webrtc.setScreenShareEndedCallback(() => {
@@ -1612,6 +1639,8 @@ export const App: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onDeviceChange={handleDeviceChange}
+        isNoiseCancellationEnabled={isNoiseCancellationEnabled}
+        onToggleNoiseCancellation={handleToggleNoiseCancellation}
       />
     </div>
   );

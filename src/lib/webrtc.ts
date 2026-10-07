@@ -125,15 +125,38 @@ export class WebRTCManager {
   private audioMeterInterval: any = null;
   private onAudioLevelChange?: (level: number) => void;
   private onScreenShareEnded?: () => void;
+  private isNoiseCancellationEnabled: boolean = true;
 
   constructor(
     signaling: SignalingService,
     myId: string,
-    onRemoteStreamUpdate: (peerId: string, stream: MediaStream | null) => void
+    onRemoteStreamUpdate: (peerId: string, stream: MediaStream | null) => void,
+    noiseCancellation: boolean = true
   ) {
     this.signaling = signaling;
     this.myId = myId;
     this.onRemoteStreamUpdate = onRemoteStreamUpdate;
+    this.isNoiseCancellationEnabled = noiseCancellation;
+  }
+
+  public setNoiseCancellation(enabled: boolean) {
+    this.isNoiseCancellationEnabled = enabled;
+    const audioTrack = this.localStream?.getAudioTracks()[0];
+    if (audioTrack && audioTrack.readyState === 'live') {
+      audioTrack
+        .applyConstraints({
+          echoCancellation: enabled,
+          noiseSuppression: enabled,
+          autoGainControl: enabled,
+        })
+        .catch((err) => {
+          console.warn('Could not dynamically apply noise cancellation constraints:', err);
+        });
+    }
+  }
+
+  public getNoiseCancellation(): boolean {
+    return this.isNoiseCancellationEnabled;
   }
 
   public setAudioLevelCallback(callback: (level: number) => void) {
@@ -172,11 +195,12 @@ export class WebRTCManager {
     }
 
     const attempt = async (): Promise<MediaStream> => {
+      const nc = this.isNoiseCancellationEnabled;
       const constraints: MediaStreamConstraints = {
         audio: audio
           ? audioDeviceId
-            ? { deviceId: { exact: audioDeviceId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            ? { deviceId: { exact: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
+            : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
           : false,
         video: video
           ? videoDeviceId
@@ -237,8 +261,9 @@ export class WebRTCManager {
       return this.localStream;
     }
     try {
+      const nc = this.isNoiseCancellationEnabled;
       const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc },
       });
       const track = mic.getAudioTracks()[0];
       if (track) {
