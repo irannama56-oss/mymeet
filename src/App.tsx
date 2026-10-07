@@ -25,6 +25,7 @@ import {
   KnockRequest,
   SignalingMessage,
   ScreenSharePreset,
+  getAvatarColorForName,
   cleanRoomCode,
   isRoomCodeLike,
 } from './lib/types';
@@ -772,9 +773,12 @@ export const App: React.FC = () => {
     setIsHost(data.isHost);
     setIsRoomLocked(data.requireHostApproval);
 
+    const userAvatarColor = getAvatarColorForName(data.name);
+
     const updatedLocal: Participant = {
       ...localParticipantRef.current,
       name: data.name,
+      avatarColor: userAvatarColor,
       isHost: data.isHost,
       isAudioEnabled: data.audioEnabled,
       isVideoEnabled: data.videoEnabled,

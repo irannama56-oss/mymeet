@@ -5,7 +5,7 @@ import {
   Sparkles, RefreshCw, Volume2
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
-import { cleanRoomCode } from '../lib/types';
+import { cleanRoomCode, getAvatarColorForName } from '../lib/types';
 import { ConnectionBanner } from './ConnectionBanner';
 import { SettingsModal } from './SettingsModal';
 
@@ -43,6 +43,9 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
+
+  // Deterministic avatar gradient based on name length & char codes
+  const avatarGradient = getAvatarColorForName(name);
 
   const generateRoomCode = () => {
     const chars = 'abcdefghijklmnopqrstuvwxyz';
@@ -217,6 +220,176 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
     setRoomId(generateRoomCode());
   };
 
+  // JITSI MEET-STYLE DIRECT PRE-JOIN SCREEN WHEN URL CONTAINS ROOM LINK
+  if (initialRoomId && !isCreatingNew) {
+    return (
+      <div className="relative min-h-screen w-full flex flex-col items-center justify-center p-4 sm:p-6 bg-gradient-to-br from-dark-950 via-dark-900 to-dark-950 overflow-x-hidden select-none">
+        {/* Background ambient lighting effects */}
+        <div className="absolute top-1/4 left-1/3 w-96 h-96 bg-indigo-600/10 rounded-full blur-[140px] pointer-events-none -z-10 animate-pulse-subtle" />
+        <div className="absolute bottom-1/4 right-1/3 w-96 h-96 bg-purple-600/10 rounded-full blur-[140px] pointer-events-none -z-10 animate-pulse-subtle" />
+
+        {/* Top Navbar */}
+        <header className="absolute top-4 sm:top-6 left-4 sm:left-6 right-4 sm:right-6 flex items-center justify-between z-20">
+          <div className="flex items-center space-x-3">
+            <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/25 border border-indigo-400/30">
+              <Radio className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-bold tracking-tight text-white font-sans">Aura</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-mono border border-indigo-500/30 uppercase tracking-wider">
+                  Meet
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2.5 rounded-xl glass-panel text-slate-300 hover:text-white hover:border-slate-600 transition-all flex items-center gap-2 text-xs font-medium cursor-pointer"
+              title="Settings"
+            >
+              <Settings className="w-4 h-4 text-indigo-400" />
+              <span className="hidden sm:inline">Settings</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Jitsi-style Centered Pre-Join Card */}
+        <div className="w-full max-w-md glass-panel p-6 sm:p-8 rounded-3xl border border-slate-700/60 shadow-2xl flex flex-col space-y-5 my-12 z-10">
+          {/* Room Badge */}
+          <div className="text-center space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-300 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 inline-block font-mono">
+              Joining Meeting
+            </span>
+            <h1 className="text-xl font-bold text-white font-mono truncate">{cleanRoomCode(initialRoomId)}</h1>
+          </div>
+
+          {/* Camera / Avatar Live Preview */}
+          <div className="relative w-full aspect-video rounded-2xl overflow-hidden glass-card border border-slate-700/60 shadow-xl group">
+            {isVideoEnabled ? (
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover -scale-x-100 bg-black/40"
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center bg-dark-900/90 relative p-4">
+                <div className={`w-20 h-20 sm:w-24 sm:h-24 rounded-3xl bg-gradient-to-tr ${avatarGradient} flex items-center justify-center text-3xl sm:text-4xl font-bold text-white shadow-2xl transition-all duration-300 border border-white/20`}>
+                  {name ? name.charAt(0).toUpperCase() : '?'}
+                </div>
+              </div>
+            )}
+
+            {/* Audio level voice visualizer */}
+            <div className="absolute bottom-3 left-3 flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-dark-950/85 backdrop-blur-md border border-slate-700/60 shadow-lg">
+              {isAudioEnabled ? (
+                <div className="flex items-center space-x-1.5">
+                  <div className="flex items-end gap-0.5 h-3.5">
+                    <span className="w-0.5 bg-emerald-400 rounded-full transition-all duration-75" style={{ height: `${Math.max(3, audioLevel * 0.4)}px` }} />
+                    <span className="w-0.5 bg-emerald-400 rounded-full transition-all duration-75" style={{ height: `${Math.max(3, audioLevel * 0.9)}px` }} />
+                    <span className="w-0.5 bg-emerald-400 rounded-full transition-all duration-75" style={{ height: `${Math.max(3, audioLevel * 0.6)}px` }} />
+                  </div>
+                  <span className="text-[11px] font-mono font-medium text-emerald-400">Mic Active</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-1 text-rose-400 text-[11px] font-medium">
+                  <MicOff className="w-3.5 h-3.5" />
+                  <span>Muted</span>
+                </div>
+              )}
+            </div>
+
+            {/* In-preview Mic / Cam Controls */}
+            <div className="absolute bottom-3 right-3 flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={toggleAudio}
+                className={`p-3 rounded-xl backdrop-blur-md transition-all cursor-pointer ${
+                  isAudioEnabled
+                    ? 'bg-slate-800/80 hover:bg-slate-700/90 text-white border border-slate-600/50 shadow-md'
+                    : 'bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/30'
+                }`}
+                title={isAudioEnabled ? 'Mute Microphone' : 'Unmute Microphone'}
+              >
+                {isAudioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleVideo}
+                className={`p-3 rounded-xl backdrop-blur-md transition-all cursor-pointer ${
+                  isVideoEnabled
+                    ? 'bg-slate-800/80 hover:bg-slate-700/90 text-white border border-slate-600/50 shadow-md'
+                    : 'bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/30'
+                }`}
+                title={isVideoEnabled ? 'Turn Off Camera' : 'Turn On Camera'}
+              >
+                {isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Direct Name Input + Join Form */}
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                Your Display Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="Enter your name..."
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                className="w-full px-4 py-3.5 bg-dark-900/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-sm"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!name.trim()}
+              className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm flex items-center justify-center space-x-2 shadow-xl shadow-indigo-600/30 hover:shadow-indigo-600/45 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group cursor-pointer"
+            >
+              <span>Join Meeting</span>
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </button>
+          </form>
+
+          {/* Switch to Create Meeting Option */}
+          <div className="pt-2 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setIsCreatingNew(true);
+                setRoomId(generateRoomCode());
+              }}
+              className="text-xs text-slate-400 hover:text-indigo-300 font-medium transition-colors cursor-pointer"
+            >
+              Create a new meeting instead
+            </button>
+          </div>
+        </div>
+
+        {/* Settings Modal */}
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          selectedAudioInput={selectedAudioId}
+          selectedVideoInput={selectedVideoId}
+          onDeviceChange={(audio, video) => {
+            setSelectedAudioId(audio);
+            setSelectedVideoId(video);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 md:p-10 bg-gradient-to-br from-dark-950 via-dark-900 to-dark-950 overflow-x-hidden select-none">
       {/* Background ambient lighting effects */}
@@ -269,7 +442,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
               />
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center bg-dark-900/90 relative">
-                <div className="w-24 h-24 rounded-3xl bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center text-4xl font-bold text-white shadow-2xl shadow-indigo-500/30 border border-indigo-400/20">
+                <div className={`w-24 h-24 rounded-3xl bg-gradient-to-tr ${avatarGradient} flex items-center justify-center text-4xl font-bold text-white shadow-2xl transition-all duration-300 border border-white/20`}>
                   {name ? name.charAt(0).toUpperCase() : '?'}
                 </div>
                 <p className="mt-3 text-sm text-slate-400 font-medium">Camera is off</p>
