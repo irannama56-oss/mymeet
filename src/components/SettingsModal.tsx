@@ -312,10 +312,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               {/* Screen Share Quality Preset */}
               <div className="p-4 rounded-2xl bg-dark-900/90 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center space-x-2 min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
+                  <div className="flex items-center space-x-2 min-w-0">
                     <Monitor className="w-4 h-4 text-indigo-400 shrink-0" />
-                    <span className="text-xs font-semibold text-white truncate">Screen Share Quality</span>
+                    <span className="text-xs font-semibold text-white truncate">Screen Share Quality (Data Usage)</span>
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 shrink-0">
                     {screenSharePreset === 'low' ? 'Low Data (~200MB/h)' : screenSharePreset === 'high' ? 'High Quality (~1.2GB/h)' : 'Balanced (~500MB/h)'}
@@ -326,27 +326,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {[
                     {
                       id: 'low',
-                      label: 'Low Data (متنی)',
+                      label: 'Low Data',
                       sub: '720p 15fps',
                       usage: '~200 MB/h',
                       icon: Zap,
-                      desc: 'کد، متون و اسلاید',
+                      desc: 'Code, text & slides',
                     },
                     {
                       id: 'balanced',
-                      label: 'Balanced (متعادل)',
+                      label: 'Balanced',
                       sub: '720p 30fps',
                       usage: '~500 MB/h',
                       icon: Monitor,
-                      desc: 'استفاده عمومی',
+                      desc: 'General desktop presentation',
                     },
                     {
                       id: 'high',
-                      label: 'High (کیفیت بالا)',
+                      label: 'High Quality',
                       sub: '1080p 30fps',
                       usage: '~1.2 GB/h',
                       icon: Sparkles,
-                      desc: 'ویدیو و انیمیشن',
+                      desc: 'Smooth video & motion',
                     },
                   ].map((p) => {
                     const Icon = p.icon;

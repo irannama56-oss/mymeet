@@ -1391,10 +1391,14 @@ export const App: React.FC = () => {
         participantsCount={remoteParticipants.length + 1}
         isHost={isHost}
         isRoomLocked={isRoomLocked}
+        isNoiseCancellationEnabled={isNoiseCancellationEnabled}
+        screenSharePreset={screenSharePreset}
         onToggleAudio={handleToggleAudio}
         onToggleVideo={handleToggleVideo}
         onToggleScreenShare={handleToggleScreenShare}
         onToggleHandRaise={handleToggleHandRaise}
+        onToggleNoiseCancellation={() => handleToggleNoiseCancellation(!isNoiseCancellationEnabled)}
+        onSelectScreenSharePreset={handleSelectScreenSharePreset}
         onToggleChat={() => {
           const next = !isChatOpen;
           setIsChatOpen(next);

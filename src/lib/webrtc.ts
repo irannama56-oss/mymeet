@@ -145,6 +145,15 @@ export class WebRTCManager {
 
   public setScreenSharePreset(preset: ScreenSharePreset) {
     this.screenSharePreset = preset;
+    if (this.screenStream) {
+      const track = this.screenStream.getVideoTracks()[0];
+      if (track && track.readyState === 'live') {
+        const frameRate = preset === 'low' ? { ideal: 15, max: 15 } : { ideal: 30, max: 30 };
+        const width = preset === 'high' ? { ideal: 1920 } : { ideal: 1280 };
+        const height = preset === 'high' ? { ideal: 1080 } : { ideal: 720 };
+        track.applyConstraints({ width, height, frameRate }).catch((e) => console.warn('Could not apply track constraints:', e));
+      }
+    }
     this.peerConnections.forEach((pc) => {
       this.applySenderParameters(pc);
     });
