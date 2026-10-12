@@ -99,8 +99,14 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
   };
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center justify-center max-w-[98vw] select-none">
-      <div className="flex items-center gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 sm:py-3 rounded-3xl glass-dock shadow-2xl border border-slate-700/60 flex-wrap sm:flex-nowrap justify-center">
+    // The wrapper spans the full width and centres the dock. Previously it used
+    // `left-1/2 -translate-x-1/2` with no width, which gives a fixed element only
+    // the RIGHT HALF of the viewport as its available shrink-to-fit width — so on
+    // a 320px phone the dock wrapped into 9 rows and grew to 406px tall, covering
+    // more than half the video grid. `pointer-events-none` keeps the now-full-width
+    // strip click-through.
+    <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-40 flex items-center justify-center px-2 pointer-events-none select-none">
+      <div className="pointer-events-auto flex items-center gap-1 sm:gap-2 px-2.5 py-2 sm:px-4 sm:py-3 rounded-3xl glass-dock shadow-2xl border border-slate-700/60 flex-wrap sm:flex-nowrap justify-center max-w-full">
         
         {/* 1. Mic Button */}
         <div className="has-tooltip relative flex items-center">
@@ -109,7 +115,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
               sounds.playClick();
               onToggleAudio();
             }}
-            className={`relative p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+            className={`relative p-3 sm:p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
               isAudioEnabled
                 ? 'bg-slate-800/80 hover:bg-slate-700/90 text-white border border-slate-700/60 shadow-md'
                 : 'bg-rose-500 hover:bg-rose-600 text-white shadow-xl shadow-rose-500/25'
@@ -121,9 +127,11 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
           <span className="tooltip">{isAudioEnabled ? 'Mute (M)' : 'Unmute (M)'}</span>
         </div>
 
-        {/* 1.5 AI Noise Cancellation Toggle right next to Mic */}
+        {/* 1.5 AI Noise Cancellation Toggle right next to Mic.
+            Hidden on phones: it is also available in Settings, and keeping it
+            inline pushed the dock into an extra row. */}
         {onToggleNoiseCancellation && (
-          <div className="has-tooltip relative flex items-center">
+          <div className="has-tooltip relative hidden sm:flex items-center">
             <button
               onClick={() => {
                 sounds.playClick();
@@ -154,7 +162,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
               sounds.playClick();
               onToggleVideo();
             }}
-            className={`relative p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+            className={`relative p-3 sm:p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
               isVideoEnabled
                 ? 'bg-slate-800/80 hover:bg-slate-700/90 text-white border border-slate-700/60 shadow-md'
                 : 'bg-rose-500 hover:bg-rose-600 text-white shadow-xl shadow-rose-500/25'
@@ -174,7 +182,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
                 sounds.playClick();
                 onToggleScreenShare();
               }}
-              className={`p-3.5 rounded-l-2xl font-medium transition-all duration-200 cursor-pointer ${
+              className={`p-3 sm:p-3.5 rounded-l-2xl font-medium transition-all duration-200 cursor-pointer ${
                 isScreenSharing
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                   : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -189,7 +197,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
           <div className="has-tooltip relative flex items-center">
             <button
               onClick={() => setShowScreenPresetMenu(!showScreenPresetMenu)}
-              className={`px-2 py-3.5 rounded-r-2xl border-l border-slate-700/50 font-mono text-[10px] font-bold transition-all cursor-pointer ${
+              className={`px-1.5 py-3 sm:px-2 sm:py-3.5 rounded-r-2xl border-l border-slate-700/50 font-mono text-[10px] font-bold transition-all cursor-pointer ${
                 isScreenSharing
                   ? 'bg-indigo-700 text-white'
                   : 'bg-slate-800/80 hover:bg-slate-700/90 text-indigo-300 border border-slate-700/60'
@@ -202,9 +210,12 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             <span className="tooltip">Screen Quality ({screenSharePreset.toUpperCase()})</span>
           </div>
 
-          {/* Screen Quality Quick Menu */}
+          {/* Screen Quality Quick Menu.
+              `fixed` + viewport centring: an absolutely-positioned popover
+              anchored to the button could overflow the right edge on phones and
+              introduce horizontal scroll. */}
           {showScreenPresetMenu && (
-            <div className="absolute bottom-16 left-0 p-2 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex flex-col gap-1 w-52 z-50 animate-in fade-in zoom-in-95 duration-150">
+            <div className="fixed bottom-52 sm:bottom-36 left-1/2 -translate-x-1/2 p-2 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex flex-col gap-1 w-52 max-w-[92vw] z-50 animate-in fade-in zoom-in-95 duration-150">
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 py-1 border-b border-slate-800">
                 Screen Quality
               </p>
@@ -243,7 +254,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             sounds.playHandRaise();
             onToggleHandRaise();
           }}
-          className={`p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+          className={`p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
             isHandRaised
               ? 'bg-amber-500 text-dark-950 font-bold shadow-lg shadow-amber-500/30 scale-105'
               : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -260,7 +271,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
         <div className="has-tooltip relative flex items-center">
           <button
             onClick={() => setShowReactions(!showReactions)}
-            className={`p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+            className={`p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
               showReactions
                 ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50 shadow-md'
                 : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -273,7 +284,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
         </div>
 
         {showReactions && (
-          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 p-2 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex items-center gap-1 animate-in fade-in zoom-in-95 duration-150 max-w-[92vw] overflow-x-auto">
+          <div className="fixed bottom-52 sm:bottom-36 left-1/2 -translate-x-1/2 p-2 rounded-2xl glass-dock border border-slate-700/80 shadow-2xl flex items-center gap-1 animate-in fade-in zoom-in-95 duration-150 max-w-[92vw] overflow-x-auto z-50">
             {EMOJIS.map((emoji) => (
               <button
                 key={emoji}
@@ -295,7 +306,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
               sounds.playClick();
               onToggleRoomLock();
             }}
-            className={`p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+            className={`p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
               isRoomLocked
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-md'
                 : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -315,7 +326,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             sounds.playClick();
             onToggleChat();
           }}
-          className={`relative p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+          className={`relative p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
             isChatOpen
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
               : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -339,7 +350,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             sounds.playClick();
             onToggleParticipants();
           }}
-          className={`relative p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
+          className={`relative p-3 sm:p-3.5 rounded-2xl font-medium transition-all duration-200 cursor-pointer ${
             isParticipantsOpen
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
               : 'bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60'
@@ -367,7 +378,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             sounds.playClick();
             onOpenSettings();
           }}
-          className="p-3.5 rounded-2xl bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60 transition-all duration-200 cursor-pointer"
+          className="p-3 sm:p-3.5 rounded-2xl bg-slate-800/80 hover:bg-slate-700/90 text-slate-200 border border-slate-700/60 transition-all duration-200 cursor-pointer"
           aria-label="Device & Audio Settings"
         >
           <Settings className="w-5 h-5" />
@@ -384,7 +395,7 @@ export const MeetingControls: React.FC<MeetingControlsProps> = ({
             sounds.playLeaveChime();
             onLeaveMeeting();
           }}
-          className="px-4 py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-semibold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all active:scale-95 cursor-pointer"
+          className="px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-semibold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all active:scale-95 cursor-pointer"
           aria-label="Leave Meeting"
         >
           <PhoneOff className="w-5 h-5" />

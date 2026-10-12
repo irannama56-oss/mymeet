@@ -240,46 +240,26 @@ export async function dbJoinOrCreateRoom(params: {
 
     // Direct table fallback if RPC is missing or timed out
     if (params.isCreate) {
-      const existingQuery = client
-        .from('rooms')
-        .select('*')
-        .eq('code', cleanCode)
-        .maybeSingle();
-
-      const { data: existing } = await withTimeout<{ data: any; error: any }>(existingQuery, 2000, {
-        data: null,
-        error: null,
-      });
-
-      if (existing) {
-        await withTimeout(
-          client
-            .from('rooms')
-            .update({
-              host_id: params.userId,
-              host_name: params.userName,
-              is_locked: Boolean(params.requireApproval),
-              status: 'active',
-              updated_at: new Date().toISOString(),
-              ended_at: null,
-            })
-            .eq('code', cleanCode),
-          2000,
-          null
-        );
-      } else {
-        await withTimeout(
-          client.from('rooms').insert({
+      // Upsert rather than select-then-insert. The RPC above can time out on our
+      // 2.5s budget *after* it has already committed the row, so the follow-up
+      // INSERT raced with it and PostgREST answered HTTP 409 (unique violation on
+      // rooms.code) — a spurious console error on almost every meeting creation.
+      await withTimeout(
+        client.from('rooms').upsert(
+          {
             code: cleanCode,
             host_id: params.userId,
             host_name: params.userName,
             is_locked: Boolean(params.requireApproval),
             status: 'active',
-          }),
-          2000,
-          null
-        );
-      }
+            updated_at: new Date().toISOString(),
+            ended_at: null,
+          },
+          { onConflict: 'code' }
+        ),
+        2000,
+        null
+      );
 
       await withTimeout(
         client.from('room_participants').upsert(
@@ -324,6 +304,12 @@ export async function dbJoinOrCreateRoom(params: {
 
       const room = roomRes.data;
       if (room) {
+        // A guest knocking on a LOCKED room is still waiting in the lobby, so it
+        // must not be recorded as an active participant. Otherwise they show up
+        // in presence queries (and keep the room "occupied") before admission.
+        const roomIsLocked = Boolean(room.is_locked);
+        const isHostUser = room.host_id === params.userId;
+
         await withTimeout(
           client.from('room_participants').upsert(
             {
@@ -331,8 +317,8 @@ export async function dbJoinOrCreateRoom(params: {
               user_id: params.userId,
               user_name: params.userName,
               avatar_color: params.avatarColor,
-              is_host: room.host_id === params.userId,
-              is_active: true,
+              is_host: isHostUser,
+              is_active: isHostUser || !roomIsLocked,
               last_seen_at: new Date().toISOString(),
               left_at: null,
             },
@@ -345,8 +331,8 @@ export async function dbJoinOrCreateRoom(params: {
         return {
           success: true,
           room,
-          isHost: room.host_id === params.userId,
-          isLocked: Boolean(room.is_locked),
+          isHost: isHostUser,
+          isLocked: roomIsLocked,
           isOffline: false,
         };
       }

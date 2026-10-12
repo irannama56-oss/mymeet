@@ -155,6 +155,7 @@ export const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [knockRequests, setKnockRequests] = useState<KnockRequest[]>([]);
+  const [isJoining, setIsJoining] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState<{ id: string; emoji: string; left: number }[]>([]);
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
 
@@ -188,6 +189,7 @@ export const App: React.FC = () => {
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   chatMessagesRef.current = chatMessages;
   const mediaBusyRef = useRef(false);
+  const joinBusyRef = useRef(false);
   const emojiTimersRef = useRef<any[]>([]);
   const emptyRoomTimerRef = useRef<any>(null);
 
@@ -272,6 +274,28 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  // The connection banner must never permanently cover the video grid.
+  // Terminal states (connected / cloud-disabled) auto-dismiss after a few
+  // seconds; only an in-flight connection or a real error stays on screen.
+  const [showTransientBanner, setShowTransientBanner] = useState(false);
+  useEffect(() => {
+    if (realtimeStatus === 'connected' || realtimeStatus === 'disabled') {
+      setShowTransientBanner(true);
+      const t = setTimeout(() => setShowTransientBanner(false), 4000);
+      return () => clearTimeout(t);
+    }
+    setShowTransientBanner(false);
+    return undefined;
+  }, [realtimeStatus]);
+
+  // While a guest is knocking, the knock banner owns that screen area — never
+  // stack the connection banner on top of it.
+  const isConnectionBannerVisible =
+    knockRequests.length === 0 &&
+    (realtimeStatus === 'connecting' ||
+      realtimeStatus === 'error' ||
+      showTransientBanner);
+
   // Connect WebRTC peer connection deterministically: Larger userId initiates offer
   const connectPeer = useCallback((peerId: string) => {
     const webrtc = webrtcRef.current;
@@ -346,6 +370,12 @@ export const App: React.FC = () => {
       emptyRoomTimerRef.current = null;
     }
 
+    // Cancel any pending speaking debounce so it can't fire after teardown
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
+
     const targetCode = roomIdRef.current || pendingRoomRef.current;
     if (targetCode) {
       void dbLeaveRoom(targetCode, userId);
@@ -354,6 +384,16 @@ export const App: React.FC = () => {
     if (typeof window !== 'undefined' && window.location.pathname !== '/') {
       window.history.pushState({}, '', '/');
     }
+
+    // IMPORTANT: drop every trace of the room we just left. Otherwise the Lobby
+    // remounts with a stale `initialRoomId` and silently re-opens the old room's
+    // pre-join screen (or loops on "Meeting not found").
+    roomIdRef.current = '';
+    pendingRoomRef.current = '';
+    setRoomId('');
+    setInitialRoomParam('');
+    setJoinPhase('idle');
+    joinPhaseRef.current = 'idle';
 
     if (signalingRef.current) {
       try {
@@ -376,13 +416,12 @@ export const App: React.FC = () => {
     setScreenStream(null);
     setRemoteStreams(new Map());
     setRemoteParticipants([]);
+    remoteParticipantsRef.current = [];
     setChatMessages([]);
     setKnockRequests([]);
     setInMeeting(false);
     inMeetingRef.current = false;
     setWaitingStatus('none');
-    setJoinPhase('idle');
-    joinPhaseRef.current = 'idle';
     setPinnedParticipantId(null);
     setScreenSharingParticipantId(null);
     setUnreadChatCount(0);
@@ -477,8 +516,9 @@ export const App: React.FC = () => {
         }
         break;
 
-      // 4. WebRTC Offer received
+      // 4. WebRTC Offer received (only once we are actually admitted to the room)
       case 'offer':
+        if (!inMeetingRef.current) break;
         if (msg.payload && msg.payload.sdp) {
           await webrtc.handleOffer(msg.senderId, msg.payload);
         }
@@ -486,6 +526,7 @@ export const App: React.FC = () => {
 
       // 5. WebRTC Answer received
       case 'answer':
+        if (!inMeetingRef.current) break;
         if (msg.payload && msg.payload.sdp) {
           await webrtc.handleAnswer(msg.senderId, msg.payload);
         }
@@ -493,6 +534,7 @@ export const App: React.FC = () => {
 
       // 6. ICE Candidate received
       case 'ice-candidate':
+        if (!inMeetingRef.current) break;
         if (msg.payload) {
           await webrtc.handleIceCandidate(msg.senderId, msg.payload);
         }
@@ -552,7 +594,10 @@ export const App: React.FC = () => {
             setScreenSharingParticipantId(null);
           }
 
-          if (isNewPeer) {
+          // Only chime for peers who arrive once we are settled in. Otherwise a
+          // fresh join played one chime per already-present participant on top
+          // of the join chime itself.
+          if (isNewPeer && Date.now() - (localParticipantRef.current.joinedAt || 0) > 4000) {
             sounds.playJoinChime();
           }
 
@@ -592,8 +637,11 @@ export const App: React.FC = () => {
         break;
 
       // 8. Participant left
-      case 'peer-left':
-        sounds.playLeaveChime();
+      case 'peer-left': {
+        // Only react for someone we actually knew about — a stray/duplicate
+        // `peer-left` used to play the leave chime for a peer that never existed.
+        const wasKnown = remoteParticipantsRef.current.some((p) => p.id === msg.senderId);
+        if (wasKnown) sounds.playLeaveChime();
         lastSeenRef.current.delete(msg.senderId);
         setRemoteParticipants((prev) => prev.filter((p) => p.id !== msg.senderId));
         if (screenSharingParticipantId === msg.senderId) {
@@ -601,6 +649,7 @@ export const App: React.FC = () => {
         }
         webrtc.closePeer(msg.senderId);
         break;
+      }
 
       // 9. In-call chat message
       case 'chat-message':
@@ -711,6 +760,17 @@ export const App: React.FC = () => {
           },
         });
       }
+
+      // Expire knock requests nobody answered. A guest who closed the tab while
+      // waiting in the lobby otherwise left a permanent "Waiting Room (1)" badge
+      // and a phantom entry the host could never dismiss.
+      const KNOCK_TTL_MS = 3 * 60 * 1000;
+      setKnockRequests((prev) => {
+        if (prev.length === 0) return prev;
+        const now = Date.now();
+        const fresh = prev.filter((k) => now - k.requestedAt < KNOCK_TTL_MS);
+        return fresh.length === prev.length ? prev : fresh;
+      });
     }, 3000);
     return () => clearInterval(interval);
   }, [inMeeting]);
@@ -868,6 +928,31 @@ export const App: React.FC = () => {
     audioDeviceId?: string;
     videoDeviceId?: string;
   }) => {
+    // A double click (or an impatient second tap) used to spin up a second
+    // SignalingService + WebRTCManager while the first DB call was in flight,
+    // leaving an orphaned channel subscribed — which duplicated every signal.
+    if (joinBusyRef.current) return;
+    joinBusyRef.current = true;
+    setIsJoining(true);
+
+    try {
+      await runJoinFlow(data);
+    } finally {
+      joinBusyRef.current = false;
+      setIsJoining(false);
+    }
+  };
+
+  const runJoinFlow = async (data: {
+    name: string;
+    roomId: string;
+    isHost: boolean;
+    audioEnabled: boolean;
+    videoEnabled: boolean;
+    requireHostApproval: boolean;
+    audioDeviceId?: string;
+    videoDeviceId?: string;
+  }) => {
     if (data.audioDeviceId) {
       setSelectedAudioInput(data.audioDeviceId);
       selectedAudioInputRef.current = data.audioDeviceId;
@@ -888,6 +973,11 @@ export const App: React.FC = () => {
     pendingRoomRef.current = cleanId;
     setIsHost(data.isHost);
     setIsRoomLocked(data.requireHostApproval);
+    // Keep the ref in lock-step with the state: `enterRoom()` below broadcasts
+    // `isRoomLockedRef.current`, and React may not have re-rendered yet (the
+    // offline DB path resolves without a real network round-trip). Without this
+    // the host announced "unlocked" and guests walked past the knock gate.
+    isRoomLockedRef.current = data.requireHostApproval;
 
     const userAvatarColor = getAvatarColorForName(data.name);
 
@@ -1029,12 +1119,25 @@ export const App: React.FC = () => {
     setJoinPhase('probing');
     joinPhaseRef.current = 'probing';
 
-    signaling.send({
-      type: 'room-probe',
-      senderName: data.name,
-    });
+    const sendProbe = () =>
+      signaling.send({
+        type: 'room-probe',
+        senderName: data.name,
+      });
 
-    // Probe timeout: if no active host or peer responds within 2.5s, room is NOT found
+    sendProbe();
+
+    // Second attempt: the first probe is easily missed if the realtime channel
+    // has only just finished subscribing, or if the peer is mid-renegotiation.
+    // A single 2.5s window produced spurious "Meeting Not Found" screens.
+    const probeRetry = setTimeout(() => {
+      if (joinPhaseRef.current === 'probing' && !inMeetingRef.current) {
+        sendProbe();
+      }
+    }, 1200);
+    probeTimersRef.current.push(probeRetry);
+
+    // Probe timeout: if no active host or peer responds within 4s, room is NOT found
     const probeTimeout = setTimeout(async () => {
       if (joinPhaseRef.current === 'probing' && !inMeetingRef.current) {
         const existingActivePeers = await dbGetActiveParticipants(cleanId, userId);
@@ -1061,7 +1164,7 @@ export const App: React.FC = () => {
           }
         }
       }
-    }, 2500);
+    }, 4000);
     probeTimersRef.current.push(probeTimeout);
   };
 
@@ -1086,6 +1189,18 @@ export const App: React.FC = () => {
     });
     setJoinPhase('idle');
     joinPhaseRef.current = 'idle';
+
+    // Drop the dead room code from both the URL and local state, otherwise the
+    // Lobby immediately re-opens the same "Joining Meeting <code>" screen and
+    // the user is trapped in a Join -> Not found -> Back to Lobby loop.
+    roomIdRef.current = '';
+    pendingRoomRef.current = '';
+    setRoomId('');
+    setInitialRoomParam('');
+    setWaitingStatus('none');
+    if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/');
+    }
   };
 
   // Toggle Audio
@@ -1281,6 +1396,16 @@ export const App: React.FC = () => {
         return;
       }
 
+      // Never hijack a browser/OS shortcut. Without this, Ctrl+C (copy),
+      // Ctrl+V (paste), Cmd+M, Alt+P … were swallowed and prevented — e.g.
+      // selecting text in the chat and pressing Ctrl+C toggled the chat drawer
+      // and cancelled the copy.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Space is reserved for push-to-talk, so don't steal it from a focused
+      // button/select (which would otherwise be activated by Space).
+      const isFormish = target && (target.tagName === 'BUTTON' || target.tagName === 'SELECT');
+
       if (e.key === 'm' || e.key === 'M') {
         e.preventDefault();
         sounds.playClick();
@@ -1316,7 +1441,7 @@ export const App: React.FC = () => {
         setIsChatOpen(false);
         setIsParticipantsOpen(false);
         setIsSettingsOpen(false);
-      } else if (e.code === 'Space' && !spacePressedRef.current) {
+      } else if (e.code === 'Space' && !isFormish && !spacePressedRef.current) {
         if (!localParticipantRef.current.isAudioEnabled) {
           e.preventDefault();
           spacePressedRef.current = true;
@@ -1424,6 +1549,7 @@ export const App: React.FC = () => {
         <Lobby
           onJoin={handleJoinFromLobby}
           initialRoomId={initialRoomParam}
+          isJoining={isJoining}
         />
         {joinPhase === 'probing' && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-950/80 backdrop-blur-md animate-in fade-in duration-150">
@@ -1477,10 +1603,12 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Connection Banner */}
-      <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4 pointer-events-none">
-        <ConnectionBanner status={realtimeStatus} />
-      </div>
+      {/* Connection Banner (auto-dismisses once the transport is healthy) */}
+      {isConnectionBannerVisible && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4 pointer-events-none">
+          <ConnectionBanner status={realtimeStatus} />
+        </div>
+      )}
 
       {/* Floating Emojis Overlay */}
       {floatingEmojis.map((item) => (
@@ -1493,8 +1621,14 @@ export const App: React.FC = () => {
         </div>
       ))}
 
-      {/* Dedicated Root-Level Audio Engines for Remote Peers */}
-      <div className="hidden pointer-events-none" aria-hidden="true">
+      {/* Dedicated Root-Level Audio Engines for Remote Peers.
+          This is the ONLY place remote audio is played — VideoTile stays muted.
+          The container must not use `display:none`, otherwise some browsers
+          (notably iOS Safari) refuse to start playback. */}
+      <div
+        aria-hidden="true"
+        style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
+      >
         {remoteParticipants.map((p) => (
           <GlobalRemoteAudio
             key={p.id}
@@ -1505,7 +1639,10 @@ export const App: React.FC = () => {
       </div>
 
       {/* Center: Main Video Grid & Spotlight Area */}
-      <main className="flex-1 w-full h-full pt-16 pb-24 px-2 sm:px-4 flex items-center justify-center overflow-hidden">
+      {/* pt/pb reserve room for the fixed header and the control dock. The dock
+          wraps into up to 3 rows on narrow phones (≈162px tall), so the bottom
+          padding is generous there and tightens once the dock is a single row. */}
+      <main className="flex-1 w-full h-full pt-16 pb-48 sm:pb-32 px-2 sm:px-4 flex items-center justify-center overflow-hidden">
         <VideoGrid
           localParticipant={localParticipant}
           localStream={localStream}

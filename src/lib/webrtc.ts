@@ -66,6 +66,12 @@ interface PeerState {
   makingOffer: boolean;
   ignoreOffer: boolean;
   isSettingRemoteAnswerPending: boolean;
+  /**
+   * Serializes SDP processing per peer. Without this, two offers arriving in
+   * quick succession (or an offer landing while we are mid-negotiation) can
+   * interleave and throw InvalidStateError.
+   */
+  opChain: Promise<void>;
 }
 
 export class WebRTCManager {
@@ -501,7 +507,12 @@ export class WebRTCManager {
 
   public stopScreenShare() {
     if (this.screenStream) {
-      this.screenStream.getTracks().forEach((t) => t.stop());
+      // Detach `onended` before stopping: stop() can dispatch `ended`, which
+      // would re-enter stopScreenShare() + onScreenShareEnded() and double-fire
+      // the state update / broadcast.
+      const tracks = this.screenStream.getTracks();
+      tracks.forEach((t) => { t.onended = null; });
+      tracks.forEach((t) => t.stop());
       this.screenStream = null;
     }
     this.syncLocalTracksToPeers();
@@ -528,6 +539,7 @@ export class WebRTCManager {
       makingOffer: false,
       ignoreOffer: false,
       isSettingRemoteAnswerPending: false,
+      opChain: Promise.resolve(),
     };
 
     this.peerStates.set(targetPeerId, state);
@@ -576,26 +588,39 @@ export class WebRTCManager {
       }
     };
 
-    // Perfect Negotiation onnegotiationneeded
-    pc.onnegotiationneeded = async () => {
-      try {
-        state.makingOffer = true;
-        const offer = await pc.createOffer();
-        if (pc.signalingState !== 'stable') return;
-        await pc.setLocalDescription(offer);
-        this.signaling.send({
-          type: 'offer',
-          targetId: targetPeerId,
-          payload: {
-            type: pc.localDescription?.type,
-            sdp: pc.localDescription?.sdp,
-          },
-        });
-      } catch (err) {
-        console.error(`[WebRTC] Perfect Negotiation error with ${targetPeerId}:`, err);
-      } finally {
-        state.makingOffer = false;
-      }
+    // Perfect Negotiation: onnegotiationneeded
+    //
+    // Uses the argument-less (implicit) setLocalDescription(), which creates AND
+    // applies the offer atomically. The previous createOffer() ->
+    // setLocalDescription(offer) pair left a window in which an incoming offer
+    // could move the connection to `have-remote-offer`, making the follow-up
+    // call throw "InvalidStateError: Called in wrong state".
+    //
+    // Negotiation is also serialized per peer so two overlapping
+    // `negotiationneeded` events can never interleave.
+    let negotiationChain: Promise<void> = Promise.resolve();
+
+    pc.onnegotiationneeded = () => {
+      negotiationChain = negotiationChain
+        .then(async () => {
+          if (pc.signalingState === 'closed' || pc.signalingState !== 'stable') return;
+          try {
+            state.makingOffer = true;
+            const desc = await this.applyLocalDescription(pc);
+            if (desc && desc.type === 'offer') {
+              this.signaling.send({
+                type: 'offer',
+                targetId: targetPeerId,
+                payload: { type: desc.type, sdp: desc.sdp },
+              });
+            }
+          } catch (err) {
+            console.warn(`[WebRTC] Negotiation skipped for ${targetPeerId}:`, err);
+          } finally {
+            state.makingOffer = false;
+          }
+        })
+        .catch(() => {});
     };
 
     // Remote Track Handler
@@ -614,17 +639,17 @@ export class WebRTCManager {
       }
       this.remoteStreams.set(targetPeerId, currentStream);
 
-      const streamWrapper = new MediaStream(currentStream.getTracks());
-
+      // Emit the STABLE MediaStream object, never a fresh wrapper. Handing out a
+      // new wrapper on every track event forced <audio>/<video> to rebind
+      // `srcObject`, which restarts playback and produces an audible click /
+      // short dropout mid-call.
       event.track.onended = () => {
-        if (currentStream) {
-          currentStream.removeTrack(event.track);
-          const remaining = currentStream.getTracks();
-          this.onRemoteStreamUpdate(targetPeerId, remaining.length > 0 ? new MediaStream(remaining) : null);
-        }
+        currentStream?.removeTrack(event.track);
+        const remaining = currentStream ? currentStream.getTracks() : [];
+        this.onRemoteStreamUpdate(targetPeerId, remaining.length > 0 ? currentStream : null);
       };
 
-      this.onRemoteStreamUpdate(targetPeerId, streamWrapper);
+      this.onRemoteStreamUpdate(targetPeerId, currentStream);
     };
 
     let restartAttempts = 0;
@@ -690,30 +715,78 @@ export class WebRTCManager {
     return state.pc;
   }
 
-  public async handleOffer(senderId: string, offer: RTCSessionDescriptionInit) {
+  /**
+   * Create + apply a local offer/answer atomically.
+   *
+   * The argument-less setLocalDescription() is the W3C-recommended form: the
+   * browser builds and applies the description in a single step, so an incoming
+   * remote description can no longer slip in between createOffer() and
+   * setLocalDescription() and cause an InvalidStateError.
+   */
+  private async applyLocalDescription(
+    pc: RTCPeerConnection
+  ): Promise<RTCSessionDescription | null> {
     try {
-      const state = this.getOrCreatePeer(senderId);
-      const { pc, isPolite } = state;
+      await pc.setLocalDescription();
+      return pc.localDescription;
+    } catch (err: any) {
+      if (err && err.name === 'InvalidStateError') throw err;
+      // Legacy browser without the implicit form: create, then apply.
+      const signalingState = pc.signalingState;
+      const desc =
+        signalingState === 'have-remote-offer' || signalingState === 'have-local-pranswer'
+          ? await pc.createAnswer()
+          : await pc.createOffer();
+      await pc.setLocalDescription(desc);
+      return pc.localDescription;
+    }
+  }
 
-      const offerCollision = state.makingOffer || pc.signalingState !== 'stable';
-      state.ignoreOffer = !isPolite && offerCollision;
+  public async handleOffer(senderId: string, offer: RTCSessionDescriptionInit) {
+    const state = this.getOrCreatePeer(senderId);
+    state.opChain = state.opChain
+      .then(() => this.processOffer(senderId, state, offer))
+      .catch((err) => console.warn(`[WebRTC] Offer processing error from ${senderId}:`, err));
+    return state.opChain;
+  }
 
-      if (state.ignoreOffer) {
-        console.warn(`[WebRTC] Collision: Impolite peer ${this.myId} ignoring colliding offer from ${senderId}`);
-        return;
-      }
+  private async processOffer(
+    senderId: string,
+    state: PeerState,
+    offer: RTCSessionDescriptionInit
+  ) {
+    const { pc, isPolite } = state;
+    if (pc.signalingState === 'closed') return;
 
-      if (offerCollision) {
-        console.log(`[WebRTC] Collision: Polite peer ${this.myId} rolling back local offer`);
+    const offerCollision = state.makingOffer || pc.signalingState !== 'stable';
+    state.ignoreOffer = !isPolite && offerCollision;
+
+    if (state.ignoreOffer) {
+      console.warn(
+        `[WebRTC] Collision: impolite peer ${this.myId} ignoring colliding offer from ${senderId}`
+      );
+      return;
+    }
+
+    if (offerCollision) {
+      // `rollback` is only legal while we still have a pending local offer.
+      if (pc.signalingState === 'have-local-offer') {
+        console.log(`[WebRTC] Collision: polite peer ${this.myId} rolling back local offer`);
         await pc.setLocalDescription({ type: 'rollback' });
+      } else {
+        // Nothing to roll back (we are mid-answer). setRemoteDescription below
+        // replaces the pending remote offer, which is the correct behaviour.
+        console.warn(
+          `[WebRTC] Collision from ${senderId} in state ${pc.signalingState}; proceeding without rollback`
+        );
       }
+    }
 
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      this.drainIceQueue(senderId, pc);
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    this.drainIceQueue(senderId, pc);
 
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
+    const answer = await this.applyLocalDescription(pc);
+    if (answer) {
       this.signaling.send({
         type: 'answer',
         targetId: senderId,
@@ -722,23 +795,25 @@ export class WebRTCManager {
           sdp: answer.sdp,
         },
       });
-    } catch (err) {
-      console.error(`[WebRTC] Error handling offer from ${senderId}:`, err);
     }
   }
 
   public async handleAnswer(senderId: string, answer: RTCSessionDescriptionInit) {
-    try {
-      const state = this.peerStates.get(senderId);
-      if (!state || state.ignoreOffer) return;
-      const pc = state.pc;
-      if (pc.signalingState === 'have-local-offer') {
+    const state = this.peerStates.get(senderId);
+    if (!state) return;
+
+    state.opChain = state.opChain
+      .then(async () => {
+        if (state.ignoreOffer) return;
+        const pc = state.pc;
+        if (pc.signalingState === 'closed') return;
+        if (pc.signalingState !== 'have-local-offer') return;
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
         this.drainIceQueue(senderId, pc);
-      }
-    } catch (err) {
-      console.error(`[WebRTC] Error handling answer from ${senderId}:`, err);
-    }
+      })
+      .catch((err) => console.warn(`[WebRTC] Answer processing error from ${senderId}:`, err));
+
+    return state.opChain;
   }
 
   public async handleIceCandidate(senderId: string, candidate: RTCIceCandidateInit) {

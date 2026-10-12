@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { 
-  X, Mic, Video, Database, CheckCircle2, AlertTriangle, 
-  Key, Globe, Shield, Volume2, Play, Keyboard, Sparkles, Monitor, Zap
+  X, Mic, Video, Database, CheckCircle2,
+  Key, Globe, Shield, Play, Keyboard, Sparkles, Monitor, Zap
 } from 'lucide-react';
 import { getSupabaseCredentials, isSupabaseReady, resetSupabaseClient } from '../lib/supabase';
 import { sounds } from '../lib/sound';
@@ -38,9 +38,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Live test preview in settings
   const [testStream, setTestStream] = useState<MediaStream | null>(null);
-  const [testAudioLevel, setTestAudioLevel] = useState(0);
   const testVideoRef = useRef<HTMLVideoElement>(null);
-  const animFrameRef = useRef<number | null>(null);
+  const testStreamRef = useRef<MediaStream | null>(null);
 
   // Supabase manual config in UI
   const initialCreds = getSupabaseCredentials();
@@ -48,6 +47,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [supabaseKey, setSupabaseKey] = useState(initialCreds.key);
   const [showCredsInput, setShowCredsInput] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  /**
+   * Always stop the camera through the ref (not through React state) so that
+   * no acquisition can be leaked when the tab or device changes mid-flight.
+   */
+  const stopTestStream = useCallback(() => {
+    if (testStreamRef.current) {
+      testStreamRef.current.getTracks().forEach((t) => t.stop());
+      testStreamRef.current = null;
+    }
+    setTestStream(null);
+  }, []);
+
+  // Re-sync the pickers with the live values every time the modal is opened,
+  // so a device chosen elsewhere is never silently reverted on "Apply".
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !wasOpenRef.current) {
+      setCurrentAudio(selectedAudioInput || '');
+      setCurrentVideo(selectedVideoInput || '');
+    }
+    wasOpenRef.current = isOpen;
+  }, [isOpen, selectedAudioInput, selectedVideoInput]);
 
   useEffect(() => {
     async function loadDevices() {
@@ -70,14 +92,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Handle live test stream for video tab
   useEffect(() => {
     if (!isOpen || activeTab !== 'video') {
-      if (testStream) {
-        testStream.getTracks().forEach((t) => t.stop());
-        setTestStream(null);
-      }
+      stopTestStream();
       return;
     }
 
     let active = true;
+
+    // Release the camera BEFORE re-acquiring: holding the previous stream while
+    // requesting the same/another device can throw NotReadableError on Windows.
+    stopTestStream();
+
     async function startCameraTest() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -90,6 +114,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        testStreamRef.current = stream;
         setTestStream(stream);
         if (testVideoRef.current) {
           testVideoRef.current.srcObject = stream;
@@ -103,17 +128,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     return () => {
       active = false;
-      if (testStream) {
-        testStream.getTracks().forEach((t) => t.stop());
-      }
     };
-  }, [isOpen, activeTab, currentVideo]);
+  }, [isOpen, activeTab, currentVideo, stopTestStream]);
+
+  // Safety net: never leave the camera light on after the modal unmounts.
+  useEffect(() => () => stopTestStream(), [stopTestStream]);
 
   if (!isOpen) return null;
 
   const handleTestSpeaker = () => {
     sounds.playTestTone();
   };
+
+  const devicesChanged =
+    (selectedAudioInput || '') !== (currentAudio || '') ||
+    (selectedVideoInput || '') !== (currentVideo || '');
 
   const handleSave = () => {
     sounds.playClick();
@@ -136,7 +165,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       resetSupabaseClient();
     }
 
-    if (onDeviceChange) {
+    // Only re-acquire media when the user actually changed a device — otherwise
+    // every "Apply" made the camera blink for no reason.
+    if (onDeviceChange && devicesChanged) {
       onDeviceChange(currentAudio, currentVideo);
     }
 

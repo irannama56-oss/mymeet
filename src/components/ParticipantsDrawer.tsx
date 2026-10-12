@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { Participant, KnockRequest } from '../lib/types';
 import { sounds } from '../lib/sound';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 interface ParticipantsDrawerProps {
   isOpen: boolean;
@@ -56,10 +57,11 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
 
   if (!isOpen) return null;
 
-  const handleCopyLink = () => {
+  const handleCopyLink = async () => {
     sounds.playClick();
     const url = `${window.location.origin}/${roomId}`;
-    navigator.clipboard.writeText(url);
+    const ok = await copyTextToClipboard(url);
+    if (!ok) return;
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };

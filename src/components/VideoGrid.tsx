@@ -25,11 +25,13 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
 }) => {
   const allParticipants = [localParticipant, ...remoteParticipants];
 
-  // Identify who is screen sharing (local or remote)
+  // Identify who is screen sharing (local or remote).
+  // Prefer the explicit sharer id, then fall back to a flagged participant, and
+  // only then assume it is us (our own screen stream is authoritative locally).
   const screenSharer =
-    allParticipants.find(
-      (p) => p.id === screenSharingParticipantId || p.isScreenSharing
-    ) || (screenStream ? localParticipant : null);
+    allParticipants.find((p) => p.id === screenSharingParticipantId) ||
+    allParticipants.find((p) => p.isScreenSharing) ||
+    (screenStream ? localParticipant : null);
 
   const isScreenSharingActive = Boolean(screenSharer);
 
@@ -83,7 +85,8 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
 
         {/* Thumbnail Strip (Participants Sidebar on Desktop / Carousel on Mobile) */}
         <div className="lg:w-72 xl:w-80 h-36 lg:h-full flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto shrink-0 pb-2 lg:pb-0">
-          {/* If screen sharing, show presenter camera in thumbnail strip (disable audio on thumbnail to prevent duplicate audio) */}
+          {/* If screen sharing, show the presenter's camera in the thumbnail strip.
+              Audio is never rendered per-tile, so there is no duplicate-audio risk. */}
           {isScreenSharingActive && (
             <div className="w-48 sm:w-56 lg:w-full h-full lg:h-44 shrink-0">
               <VideoTile
@@ -96,7 +99,6 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
                 isLocal={isSharerLocal}
                 onTogglePin={onTogglePin}
                 isScreenShareTile={false}
-                disableAudio={true}
               />
             </div>
           )}

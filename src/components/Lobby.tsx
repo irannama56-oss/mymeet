@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Video, VideoOff, Mic, MicOff, Lock, Unlock, 
   ArrowRight, Shield, Radio, Copy, Check, Settings,
-  Sparkles, RefreshCw, Volume2
+  RefreshCw
 } from 'lucide-react';
 import { sounds } from '../lib/sound';
-import { cleanRoomCode, getAvatarColorForName } from '../lib/types';
+import { cleanRoomCode, getAvatarColorForName, ScreenSharePreset } from '../lib/types';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { ConnectionBanner } from './ConnectionBanner';
 import { SettingsModal } from './SettingsModal';
 
@@ -21,9 +22,10 @@ interface LobbyProps {
     videoDeviceId?: string;
   }) => void;
   initialRoomId?: string;
+  isJoining?: boolean;
 }
 
-export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
+export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', isJoining = false }) => {
   const [name, setName] = useState(() => localStorage.getItem('aura_meet_username') || '');
   const [roomId, setRoomId] = useState(initialRoomId);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
@@ -40,6 +42,39 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioId, setSelectedAudioId] = useState<string>('');
   const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+
+  // Audio / screen-share preferences. These must live in the Lobby too, otherwise
+  // the toggles inside the pre-join Settings modal are dead controls.
+  const [isNoiseCancellationEnabled, setIsNoiseCancellationEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('mymeet_noise_cancellation') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [screenSharePreset, setScreenSharePreset] = useState<ScreenSharePreset>(() => {
+    try {
+      const saved = localStorage.getItem('mymeet_screenshare_preset');
+      if (saved === 'balanced' || saved === 'high') return saved;
+      return 'low';
+    } catch {
+      return 'low';
+    }
+  });
+
+  const handleToggleNoiseCancellation = (enabled: boolean) => {
+    setIsNoiseCancellationEnabled(enabled);
+    try {
+      localStorage.setItem('mymeet_noise_cancellation', String(enabled));
+    } catch {}
+  };
+
+  const handleSelectScreenSharePreset = (preset: ScreenSharePreset) => {
+    setScreenSharePreset(preset);
+    try {
+      localStorage.setItem('mymeet_screenshare_preset', preset);
+    } catch {}
+  };
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -96,7 +131,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
 
     async function initPreview() {
       try {
-        const isNcEnabled = localStorage.getItem('mymeet_noise_cancellation') !== 'false';
+        const isNcEnabled = isNoiseCancellationEnabled;
         const constraints: MediaStreamConstraints = {
           video: isVideoEnabled
             ? selectedVideoId
@@ -173,7 +208,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
         currentStream.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [isVideoEnabled, isAudioEnabled, selectedAudioId, selectedVideoId]);
+  }, [isVideoEnabled, isAudioEnabled, selectedAudioId, selectedVideoId, isNoiseCancellationEnabled]);
 
   const toggleAudio = () => {
     sounds.playClick();
@@ -213,8 +248,9 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
     });
   };
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(roomId);
+  const handleCopyCode = async () => {
+    const ok = await copyTextToClipboard(roomId);
+    if (!ok) return;
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   };
@@ -346,6 +382,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
               <input
                 type="text"
                 required
+                dir="auto"
                 placeholder="Enter your name..."
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -356,10 +393,10 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
 
             <button
               type="submit"
-              disabled={!name.trim()}
+              disabled={!name.trim() || isJoining}
               className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm flex items-center justify-center space-x-2 shadow-xl shadow-indigo-600/30 hover:shadow-indigo-600/45 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group cursor-pointer"
             >
-              <span>Join Meeting</span>
+              <span>{isJoining ? 'Joining…' : 'Join Meeting'}</span>
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
           </form>
@@ -389,6 +426,10 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
             setSelectedAudioId(audio);
             setSelectedVideoId(video);
           }}
+          isNoiseCancellationEnabled={isNoiseCancellationEnabled}
+          onToggleNoiseCancellation={handleToggleNoiseCancellation}
+          screenSharePreset={screenSharePreset}
+          onSelectScreenSharePreset={handleSelectScreenSharePreset}
         />
       </div>
     );
@@ -595,6 +636,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
                 <input
                   type="text"
                   required
+                  dir="auto"
                   placeholder="e.g. Alex Rivera"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -677,10 +719,16 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '' }) => {
               {/* Submit CTA Button */}
               <button
                 type="submit"
-                disabled={!name.trim() || !roomId.trim()}
+                disabled={!name.trim() || !roomId.trim() || isJoining}
                 className="w-full py-4 px-4 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold flex items-center justify-center space-x-2 shadow-xl shadow-indigo-600/30 hover:shadow-indigo-600/45 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group cursor-pointer"
               >
-                <span>{isCreatingNew ? 'Start Meeting Now' : 'Join Room'}</span>
+                <span>
+                  {isJoining
+                    ? 'Connecting…'
+                    : isCreatingNew
+                    ? 'Start Meeting Now'
+                    : 'Join Room'}
+                </span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </button>
             </form>

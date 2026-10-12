@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Lock, Unlock, Copy, Check, Radio, Users, Clock, Crown } from 'lucide-react';
+import { Shield, Lock, Copy, Check, Users } from 'lucide-react';
 import { sounds } from '../lib/sound';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 interface MeetingHeaderProps {
   roomId: string;
@@ -31,10 +32,11 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleCopyCode = () => {
+  const handleCopyCode = async () => {
     sounds.playClick();
     const meetUrl = `${window.location.origin}/${roomId}`;
-    navigator.clipboard.writeText(meetUrl);
+    const ok = await copyTextToClipboard(meetUrl);
+    if (!ok) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -72,6 +74,16 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
         <div className="flex items-center space-x-1.5 text-slate-200 text-xs font-mono font-medium">
           <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
           <span>{formatTime(elapsedSeconds)}</span>
+        </div>
+
+        <div className="h-4 w-[1px] bg-slate-700/80" />
+
+        <div
+          className="flex items-center space-x-1.5 text-slate-200 text-xs font-medium"
+          title={`${participantsCount} participant${participantsCount === 1 ? '' : 's'} in this meeting`}
+        >
+          <Users className="w-3.5 h-3.5 text-indigo-400" />
+          <span className="font-mono">{participantsCount}</span>
         </div>
 
         <div className="h-4 w-[1px] bg-slate-700/80" />
