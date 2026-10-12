@@ -640,14 +640,38 @@ export const App: React.FC = () => {
       case 'peer-left': {
         // Only react for someone we actually knew about — a stray/duplicate
         // `peer-left` used to play the leave chime for a peer that never existed.
-        const wasKnown = remoteParticipantsRef.current.some((p) => p.id === msg.senderId);
-        if (wasKnown) sounds.playLeaveChime();
+        const departed = remoteParticipantsRef.current.find((p) => p.id === msg.senderId);
+        if (departed) sounds.playLeaveChime();
         lastSeenRef.current.delete(msg.senderId);
         setRemoteParticipants((prev) => prev.filter((p) => p.id !== msg.senderId));
         if (screenSharingParticipantId === msg.senderId) {
           setScreenSharingParticipantId(null);
         }
         webrtc.closePeer(msg.senderId);
+
+        // Host migration. If the host leaves, a LOCKED room used to be stranded:
+        // nobody could admit the people already knocking and nobody could unlock
+        // it, so the meeting became permanently unjoinable. The longest-present
+        // remaining participant takes the role (ties broken deterministically so
+        // exactly one peer promotes itself).
+        if (departed?.isHost && !localParticipantRef.current.isHost) {
+          const myJoinedAt = localParticipantRef.current.joinedAt || 0;
+          const others = remoteParticipantsRef.current.filter((p) => p.id !== msg.senderId);
+          const iAmOldest = others.every((p) => {
+            const theirs = p.joinedAt || 0;
+            if (theirs !== myJoinedAt) return theirs > myJoinedAt;
+            return p.id > userId;
+          });
+
+          if (iAmOldest) {
+            console.log('[Mesh] Host left — promoting the longest-present participant.');
+            setIsHost(true);
+            const promoted = { ...localParticipantRef.current, isHost: true };
+            localParticipantRef.current = promoted;
+            setLocalParticipant(promoted);
+            broadcastMyState(promoted);
+          }
+        }
         break;
       }
 
@@ -722,6 +746,7 @@ export const App: React.FC = () => {
     enterRoom,
     clearProbeTimers,
     handleLeaveMeeting,
+    broadcastMyState,
   ]);
 
   signalingHandlerRef.current = handleSignalingMessage;

@@ -516,6 +516,12 @@ export class SignalingService {
   private retryCount: number = 0;
   private retryTimer: any = null;
   private disposed: boolean = false;
+  /**
+   * The client that actually owns `this.channel`. Credentials can be swapped in
+   * Settings, which drops the singleton — removing the channel through a *new*
+   * client silently fails and leaks the old subscription.
+   */
+  private channelClient: SupabaseClient | null = null;
 
   constructor(roomId: string, userId: string) {
     this.roomId = cleanRoomCode(roomId);
@@ -549,14 +555,15 @@ export class SignalingService {
     if (typeof window !== 'undefined') {
       this.onlineListener = () => {
         console.log('[Signaling] Network came online, triggering immediate reconnect...');
-        const client = getSupabaseClient();
-        if (client && !this.disposed) {
-          if (this.retryTimer) {
-            clearTimeout(this.retryTimer);
-            this.retryTimer = null;
-          }
-          this.subscribeToChannel(client);
+        if (this.disposed) return;
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer);
+          this.retryTimer = null;
         }
+        // Tear the old channel down first. Previously the still-subscribed
+        // channel was simply overwritten, so it kept delivering every message a
+        // second time and held its socket open until the tab closed.
+        this.subscribeToChannel();
       };
       window.addEventListener('online', this.onlineListener);
     }
@@ -581,12 +588,38 @@ export class SignalingService {
       this.setStatus('disabled');
     } else {
       this.setStatus('connecting');
-      this.subscribeToChannel(client);
+      this.subscribeToChannel();
     }
   }
 
-  private subscribeToChannel(client: SupabaseClient) {
+  /** Remove the current channel from the client that owns it. */
+  private teardownChannel() {
+    const channel = this.channel;
+    const owner = this.channelClient;
+    this.channel = null;
+    this.channelClient = null;
+    this.isChannelSubscribed = false;
+    if (channel && owner) {
+      try {
+        owner.removeChannel(channel);
+      } catch (e) {
+        console.warn('Error removing channel:', e);
+      }
+    }
+  }
+
+  private subscribeToChannel() {
     if (this.disposed) return;
+
+    // Never leave a previous subscription alive — two live channels on the same
+    // topic duplicate every broadcast.
+    this.teardownChannel();
+
+    const client = getSupabaseClient();
+    if (!client) {
+      this.setStatus('disabled');
+      return;
+    }
 
     try {
       this.channel = client.channel(`meet-room-${this.roomId}`, {
@@ -595,6 +628,7 @@ export class SignalingService {
           presence: { key: this.userId },
         },
       });
+      this.channelClient = client;
 
       this.channel
         .on('broadcast', { event: 'signal' }, (payload) => {
@@ -623,17 +657,17 @@ export class SignalingService {
           this.isChannelSubscribed = false;
           if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             this.setStatus('error');
-            this.scheduleResubscribe(client);
+            this.scheduleResubscribe();
           }
         });
     } catch (err) {
       console.warn('Error setting up Supabase Realtime channel:', err);
       this.setStatus('error');
-      this.scheduleResubscribe(client);
+      this.scheduleResubscribe();
     }
   }
 
-  private scheduleResubscribe(client: SupabaseClient) {
+  private scheduleResubscribe() {
     if (this.disposed || this.retryTimer !== null) return;
 
     // Exponential backoff capped at 5 seconds for fast recovery
@@ -643,13 +677,7 @@ export class SignalingService {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       if (this.disposed) return;
-      try {
-        if (this.channel) {
-          client.removeChannel(this.channel);
-        }
-      } catch (e) {}
-      this.channel = null;
-      this.subscribeToChannel(client);
+      this.subscribeToChannel();
     }, delay);
   }
 
@@ -746,15 +774,7 @@ export class SignalingService {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
-    const client = getSupabaseClient();
-    if (this.channel && client) {
-      try {
-        client.removeChannel(this.channel);
-      } catch (e) {
-        console.warn('Error removing channel:', e);
-      }
-      this.channel = null;
-    }
+    this.teardownChannel();
     if (this.localBroadcast) {
       try {
         this.localBroadcast.close();
