@@ -91,6 +91,8 @@ export class WebRTCManager {
   private onScreenShareEnded?: () => void;
   private isNoiseCancellationEnabled: boolean = true;
   private screenSharePreset: ScreenSharePreset = 'low';
+  /** Remembered so a microphone re-open (e.g. NC toggle) keeps the chosen device. */
+  private audioDeviceId: string = '';
 
   constructor(
     signaling: SignalingService,
@@ -148,24 +150,142 @@ export class WebRTCManager {
     }
   }
 
-  public setNoiseCancellation(enabled: boolean) {
-    this.isNoiseCancellationEnabled = enabled;
-    const audioTrack = this.localStream?.getAudioTracks()[0];
-    if (audioTrack && audioTrack.readyState === 'live') {
-      audioTrack
-        .applyConstraints({
-          echoCancellation: enabled,
-          noiseSuppression: enabled,
-          autoGainControl: enabled,
-        })
-        .catch((err) => {
-          console.warn('Could not dynamically apply noise cancellation constraints:', err);
+  public getNoiseCancellation(): boolean {
+    return this.isNoiseCancellationEnabled;
+  }
+
+  /**
+   * Single source of truth for microphone constraints.
+   *
+   * Two things matter here, both verified against Chrome:
+   *
+   * 1. Echo cancellation and auto gain are ALWAYS on. They are not part of
+   *    "noise cancellation" — turning AEC off makes everyone on speakers hear
+   *    themselves, which sounds exactly like a broken call.
+   * 2. Chrome silently IGNORES the bare and `{ideal: …}` forms of
+   *    `echoCancellation` / `noiseSuppression` / `autoGainControl` and falls back
+   *    to the platform default. Only the `exact` form is honoured. Passing bare
+   *    values is why the NC toggle used to be a complete no-op — and worse,
+   *    mixing a bare AEC with an exact NS collapses the whole audio-processing
+   *    bundle to OFF, which introduced echo.
+   *
+   * `strict: false` produces the relaxed form used as a fallback for devices that
+   * cannot satisfy an exact request.
+   */
+  private buildAudioConstraints(deviceId?: string, strict: boolean = true): MediaTrackConstraints {
+    const nc = this.isNoiseCancellationEnabled;
+    const constraints: MediaTrackConstraints = strict
+      ? {
+          echoCancellation: { exact: true },
+          autoGainControl: { exact: true },
+          noiseSuppression: { exact: nc },
+        }
+      : {
+          echoCancellation: true,
+          autoGainControl: true,
+          noiseSuppression: nc,
+        };
+    constraints.channelCount = { ideal: 1 };
+    if (deviceId) constraints.deviceId = { ideal: deviceId };
+    return constraints;
+  }
+
+  /**
+   * Open the microphone with the strict constraints, degrading to the relaxed
+   * form if the device cannot satisfy them (rather than losing the mic entirely).
+   */
+  private async openMicrophone(deviceId?: string): Promise<MediaStream | null> {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: this.buildAudioConstraints(deviceId, true),
+      });
+    } catch (err) {
+      console.warn('[WebRTC] Strict audio constraints rejected, retrying relaxed:', err);
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: this.buildAudioConstraints(deviceId, false),
         });
+      } catch (err2) {
+        console.warn('[WebRTC] Microphone unavailable:', err2);
+        return null;
+      }
     }
   }
 
-  public getNoiseCancellation(): boolean {
-    return this.isNoiseCancellationEnabled;
+  /**
+   * Apply the noise-cancellation preference to the live microphone.
+   *
+   * Chrome rejects `applyConstraints()` with the `exact` form
+   * (OverconstrainedError) and ignores the relaxed form, so the only reliable way
+   * to change noise suppression on a live track is to re-open the microphone and
+   * swap the track on every sender. `replaceTrack()` needs no renegotiation, so
+   * the call never drops.
+   *
+   * @returns whether the microphone actually ended up in the requested state.
+   */
+  public async setNoiseCancellation(enabled: boolean): Promise<boolean> {
+    this.isNoiseCancellationEnabled = enabled;
+
+    const track = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live');
+    if (!track) return true; // no mic yet — the flag applies at the next acquisition
+
+    // Best-effort fast path. Harmless when ignored (it usually is).
+    try {
+      await track.applyConstraints(this.buildAudioConstraints(undefined, false));
+    } catch (err) {
+      console.warn('[WebRTC] applyConstraints for audio failed:', err);
+    }
+
+    if (track.getSettings().noiseSuppression === enabled) {
+      return true; // the browser honoured the change
+    }
+
+    console.log('[WebRTC] Re-opening the microphone to apply noiseSuppression:', enabled);
+    await this.replaceMicrophoneTrack();
+
+    const swapped = this.localStream?.getAudioTracks().find((t) => t.readyState === 'live');
+    return swapped ? swapped.getSettings().noiseSuppression === enabled : false;
+  }
+
+  /**
+   * Re-acquire the microphone with the current constraints and swap it into every
+   * peer connection. Keeps the muted/unmuted state and never renegotiates.
+   */
+  private async replaceMicrophoneTrack(): Promise<void> {
+    if (!this.localStream) return;
+
+    const oldTrack = this.localStream.getAudioTracks()[0] || null;
+    const wasEnabled = oldTrack ? oldTrack.enabled : true;
+
+    const mic = await this.openMicrophone(this.audioDeviceId || undefined);
+    if (!mic) return;
+
+    const newTrack = mic.getAudioTracks()[0];
+    if (!newTrack) {
+      mic.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    newTrack.enabled = wasEnabled;
+
+    if (oldTrack) {
+      this.localStream.removeTrack(oldTrack);
+      oldTrack.stop();
+    }
+    this.localStream.addTrack(newTrack);
+
+    this.peerStates.forEach(({ pc }) => {
+      if (pc.signalingState === 'closed') return;
+      const audioTransceiver = pc
+        .getTransceivers()
+        .find((t) => t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio');
+      if (audioTransceiver) {
+        audioTransceiver.sender
+          .replaceTrack(newTrack)
+          .catch((e) => console.warn('[WebRTC] replaceTrack after mic swap failed:', e));
+      }
+    });
+
+    this.setupAudioAnalysis(this.localStream);
   }
 
   public setAudioLevelCallback(callback: (level: number) => void) {
@@ -206,12 +326,10 @@ export class WebRTCManager {
       return empty;
     }
 
-    const nc = this.isNoiseCancellationEnabled;
+    if (audio && audioDeviceId) this.audioDeviceId = audioDeviceId;
 
     const audioConstraints: MediaTrackConstraints | boolean = audio
-      ? audioDeviceId
-        ? { deviceId: { ideal: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
-        : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
+      ? this.buildAudioConstraints(audioDeviceId)
       : false;
 
     const videoConstraints: MediaTrackConstraints | boolean = video
@@ -229,22 +347,35 @@ export class WebRTCManager {
       });
     } catch (err) {
       console.warn('[WebRTC] Preferred getUserMedia failed, retrying with flexible constraints:', err);
-      // Fallback 1: retry without deviceId
+      // Fallback 1: relax the audio constraints and drop the deviceId
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: audio ? { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc } : false,
+          audio: audio ? this.buildAudioConstraints(undefined, false) : false,
           video: video ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
         });
       } catch (err2) {
-        console.warn('[WebRTC] Flexible getUserMedia failed:', err2);
-        // Fallback 2: try audio-only if video caused the failure
+        console.warn('[WebRTC] Combined getUserMedia failed, acquiring devices separately:', err2);
+        // Fallback 2: acquire each device on its own. Asking for both at once
+        // means one bad device (or an unsupported audio constraint) costs us the
+        // other one too — previously that silently downgraded a call to audio-only.
+        const combined = new MediaStream();
         if (audio) {
+          const mic = await this.openMicrophone(audioDeviceId);
+          mic?.getAudioTracks().forEach((t) => combined.addTrack(t));
+        }
+        if (video) {
           try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          } catch (audioErr) {
-            console.warn('[WebRTC] Microphone access failed completely:', audioErr);
+            const cam = await navigator.mediaDevices.getUserMedia({
+              video: videoDeviceId
+                ? { deviceId: { ideal: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                : { width: { ideal: 1280 }, height: { ideal: 720 } },
+            });
+            cam.getVideoTracks().forEach((t) => combined.addTrack(t));
+          } catch (videoErr) {
+            console.warn('[WebRTC] Camera unavailable:', videoErr);
           }
         }
+        stream = combined;
       }
     }
 
@@ -280,13 +411,9 @@ export class WebRTCManager {
     }
 
     try {
-      const nc = this.isNoiseCancellationEnabled;
-      const mic = await navigator.mediaDevices.getUserMedia({
-        audio: audioDeviceId
-          ? { deviceId: { ideal: audioDeviceId }, echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc }
-          : { echoCancellation: nc, noiseSuppression: nc, autoGainControl: nc },
-      });
-      const track = mic.getAudioTracks()[0];
+      if (audioDeviceId) this.audioDeviceId = audioDeviceId;
+      const mic = await this.openMicrophone(audioDeviceId);
+      const track = mic?.getAudioTracks()[0];
       if (track) {
         track.enabled = true;
         this.localStream.addTrack(track);
@@ -462,15 +589,30 @@ export class WebRTCManager {
       const width = preset === 'high' ? { ideal: 1920 } : { ideal: 1280 };
       const height = preset === 'high' ? { ideal: 1080 } : { ideal: 720 };
 
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: 'monitor',
-          width,
-          height,
-          frameRate,
-        },
-        audio: true,
-      });
+      const videoConstraints: MediaTrackConstraints = {
+        displaySurface: 'monitor',
+        width,
+        height,
+        frameRate,
+      };
+
+      let screenStream: MediaStream;
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: videoConstraints,
+          audio: true,
+        });
+      } catch (err: any) {
+        // Only retry when the *audio* request is what failed. `NotAllowedError` /
+        // `AbortError` mean the user dismissed the picker — retrying would pop it
+        // up a second time, which is worse than failing.
+        const name = err && err.name;
+        const audioWasTheProblem =
+          name === 'NotSupportedError' || name === 'TypeError' || name === 'OverconstrainedError';
+        if (!audioWasTheProblem) throw err;
+        console.warn('[WebRTC] getDisplayMedia rejected audio, retrying video-only:', err);
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints });
+      }
 
       this.screenStream = screenStream;
       const screenTrack = screenStream.getVideoTracks()[0];

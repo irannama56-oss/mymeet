@@ -131,21 +131,58 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoin, initialRoomId = '', isJoin
 
     async function initPreview() {
       try {
-        const isNcEnabled = isNoiseCancellationEnabled;
+        // Echo cancellation and auto gain stay ON regardless of the NC toggle:
+        // they are not "noise cancellation", and disabling AEC makes everyone on
+        // speakers hear themselves. Only noiseSuppression follows the toggle.
+        const audioBase: MediaTrackConstraints = {
+          echoCancellation: true,
+          autoGainControl: true,
+          noiseSuppression: isNoiseCancellationEnabled,
+        };
         const constraints: MediaStreamConstraints = {
           video: isVideoEnabled
             ? selectedVideoId
-              ? { deviceId: { exact: selectedVideoId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+              ? { deviceId: { ideal: selectedVideoId }, width: { ideal: 1280 }, height: { ideal: 720 } }
               : { width: { ideal: 1280 }, height: { ideal: 720 } }
             : false,
           audio: isAudioEnabled
             ? selectedAudioId
-              ? { deviceId: { exact: selectedAudioId }, echoCancellation: isNcEnabled, noiseSuppression: isNcEnabled, autoGainControl: isNcEnabled }
-              : { echoCancellation: isNcEnabled, noiseSuppression: isNcEnabled, autoGainControl: isNcEnabled }
+              ? { ...audioBase, deviceId: { ideal: selectedAudioId } }
+              : audioBase
             : false,
         };
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(async (err) => {
+          // Preview only: if the combined request fails (busy mic, missing device),
+          // still show whatever we can rather than a blank preview.
+          console.warn('Lobby preview combined getUserMedia failed, retrying per device:', err);
+          const combined = new MediaStream();
+          if (isVideoEnabled) {
+            try {
+              const cam = await navigator.mediaDevices.getUserMedia({
+                video: selectedVideoId
+                  ? { deviceId: { ideal: selectedVideoId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                  : { width: { ideal: 1280 }, height: { ideal: 720 } },
+              });
+              cam.getVideoTracks().forEach((t) => combined.addTrack(t));
+            } catch (e) {
+              console.warn('Lobby preview camera unavailable:', e);
+            }
+          }
+          if (isAudioEnabled) {
+            try {
+              const mic = await navigator.mediaDevices.getUserMedia({
+                audio: selectedAudioId
+                  ? { ...audioBase, deviceId: { ideal: selectedAudioId } }
+                  : audioBase,
+              });
+              mic.getAudioTracks().forEach((t) => combined.addTrack(t));
+            } catch (e) {
+              console.warn('Lobby preview microphone unavailable:', e);
+            }
+          }
+          return combined;
+        });
 
         if (!active) {
           stream.getTracks().forEach((t) => t.stop());

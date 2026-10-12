@@ -211,7 +211,10 @@ export async function dbJoinOrCreateRoom(params: {
   const cleanCode = cleanRoomCode(params.code);
 
   try {
-    // Try calling the optimized RPC function with 2500ms timeout
+    // 6s, not 2.5s. A cold Supabase project routinely takes 2-4s for the first
+    // RPC, and abandoning the call mid-flight let the fallback below race with
+    // the RPC's own INSERT — which surfaced as an HTTP 409 and, when both paths
+    // lost, left the room uncreated so guests saw "Meeting not found".
     const rpcPromise = client.rpc('join_or_create_room', {
       p_code: cleanCode,
       p_user_id: params.userId,
@@ -221,7 +224,7 @@ export async function dbJoinOrCreateRoom(params: {
       p_require_approval: Boolean(params.requireApproval),
     });
 
-    const response = await withTimeout<{ data: any; error: any }>(rpcPromise, 2500, {
+    const response = await withTimeout<{ data: any; error: any }>(rpcPromise, 6000, {
       data: null,
       error: { message: 'TIMEOUT' },
     });
@@ -240,10 +243,10 @@ export async function dbJoinOrCreateRoom(params: {
 
     // Direct table fallback if RPC is missing or timed out
     if (params.isCreate) {
-      // Upsert rather than select-then-insert. The RPC above can time out on our
-      // 2.5s budget *after* it has already committed the row, so the follow-up
-      // INSERT raced with it and PostgREST answered HTTP 409 (unique violation on
-      // rooms.code) — a spurious console error on almost every meeting creation.
+      // Upsert rather than select-then-insert. The RPC above can still be in
+      // flight when we get here, so a plain INSERT would race with its own
+      // INSERT and PostgREST would answer HTTP 409 (unique violation on
+      // rooms.code). An upsert converges on the same row either way.
       await withTimeout(
         client.from('rooms').upsert(
           {
@@ -257,7 +260,7 @@ export async function dbJoinOrCreateRoom(params: {
           },
           { onConflict: 'code' }
         ),
-        2000,
+        4000,
         null
       );
 
@@ -275,7 +278,7 @@ export async function dbJoinOrCreateRoom(params: {
           },
           { onConflict: 'room_code,user_id' }
         ),
-        2000,
+        4000,
         null
       );
 
@@ -289,7 +292,7 @@ export async function dbJoinOrCreateRoom(params: {
         .eq('status', 'active')
         .maybeSingle();
 
-      const roomRes = await withTimeout<{ data: any; error: any }>(roomQuery, 2500, {
+      const roomRes = await withTimeout<{ data: any; error: any }>(roomQuery, 4000, {
         data: null,
         error: { message: 'TIMEOUT' },
       });
@@ -324,7 +327,7 @@ export async function dbJoinOrCreateRoom(params: {
             },
             { onConflict: 'room_code,user_id' }
           ),
-          2000,
+          4000,
           null
         );
 

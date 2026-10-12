@@ -106,7 +106,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: currentVideo
-            ? { deviceId: { exact: currentVideo }, width: { ideal: 640 }, height: { ideal: 360 } }
+            ? { deviceId: { ideal: currentVideo }, width: { ideal: 640 }, height: { ideal: 360 } }
             : { width: { ideal: 640 }, height: { ideal: 360 } },
           audio: false,
         });
@@ -273,7 +273,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        Filters out background noise, keyboard clicks & room echo
+                        Filters out background noise & keyboard clicks. Echo cancellation stays on.
                       </p>
                     </div>
                   </div>

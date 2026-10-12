@@ -902,9 +902,24 @@ export const App: React.FC = () => {
     try {
       localStorage.setItem('mymeet_noise_cancellation', String(enabled));
     } catch {}
-    if (webrtcRef.current) {
-      webrtcRef.current.setNoiseCancellation(enabled);
-    }
+
+    const webrtc = webrtcRef.current;
+    if (!webrtc) return;
+
+    // The toggle is optimistic, but the microphone may refuse the change (some
+    // devices cannot toggle noise suppression at runtime). If the hardware did
+    // not comply, put the switch back where reality is instead of lying.
+    void webrtc
+      .setNoiseCancellation(enabled)
+      .then((applied) => {
+        if (applied) return;
+        console.warn('[App] Microphone refused the noise-cancellation change.');
+        setIsNoiseCancellationEnabled(!enabled);
+        try {
+          localStorage.setItem('mymeet_noise_cancellation', String(!enabled));
+        } catch {}
+      })
+      .catch((err) => console.warn('[App] Noise-cancellation toggle failed:', err));
   }, []);
 
   const handleSelectScreenSharePreset = useCallback((preset: ScreenSharePreset) => {
@@ -1090,8 +1105,13 @@ export const App: React.FC = () => {
       }
     });
 
-    // 1. If host created the meeting
-    if (data.isHost || dbResult.isHost) {
+    // 1. If host created the meeting.
+    // The database is authoritative when it actually inspected the room: if it
+    // reports that this code already belongs to another *active* host, join as a
+    // guest rather than becoming a second host (which used to happen because the
+    // create RPC always answered is_host: true).
+    const dbDeniesHost = dbResult.success && !dbResult.isHost && !dbResult.isOffline;
+    if ((data.isHost && !dbDeniesHost) || dbResult.isHost) {
       enterRoom();
       return;
     }
